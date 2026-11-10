@@ -1,9 +1,9 @@
 # pressurecooker
+Never have to pay for video upload limits again, **pressurecook** videos to your preferred size, **using FFmpeg**.
 
-Command-line video encoding toward a requested file size, using FFmpeg. The default is HEVC with Vulkan Video GPU detection, a fast preset, and software fallback when GPU encoding is unavailable.
+Uses Vulkan for GPU Detection, supports **NVIDIA NVENC, AMD VCE, Intel QuickSync**. Through a simple command-line interface, pressurecooker calculates a video and audio bitrate budget from the source duration. It reports the finished size and warns when the output exceeds the target. Encoder rate control and container overhead can cause the result to differ from the requested size.
 
-pressurecooker calculates a video and audio bitrate budget from the source duration. It reports the finished size and warns when the output exceeds the target. Encoder rate control and container overhead can cause the result to differ from the requested size.
-
+hainan chicken
 ## Quick start
 
 Install Python 3.10+, Git, and [FFmpeg with ffprobe](#requirements). Keep FFmpeg and ffprobe on PATH, then clone the repository:
