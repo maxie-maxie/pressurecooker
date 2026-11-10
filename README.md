@@ -43,6 +43,7 @@ Replace `video.mp4` with your file. Use `--help` to list flags.
 - [Encoding behavior](#encoding-behavior)
 - [Compatibility](#compatibility)
 - [Development](#development)
+- [Publishing to PyPI](#publishing-to-pypi)
 - [License](#license)
 
 ## Requirements
@@ -288,6 +289,44 @@ python scripts/package_release.py
 Outputs are written to `dist/`. Native builds use the operating system and pointer width of the Python interpreter running the script. A 32-bit build requires a 32-bit interpreter. Build Linux executables on the oldest Linux distribution you intend to support.
 
 The native builder discovers CPython and PyInstaller licenses from the installed runtime and distribution metadata. For a custom Python installation, pass `--python-license PATH`. Supplemental dependency notices are supplied for Windows CPython 3.12.10/3.14.4 and discovered from Debian/Ubuntu system packages. Other runtimes require `--runtime-license-dir PATH`. Missing license files stop the build. `--clean` removes the repository's build outputs before rebuilding.
+
+## Publishing to PyPI
+
+Publishing a GitHub release runs [publish-pypi.yml](.github/workflows/publish-pypi.yml). It builds the wheel and source distribution, checks their metadata, tests the installed wheel, and uploads both packages through [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/).
+
+### One-time setup
+
+Create a PyPI account, verify its email address, and enable two-factor authentication. Under [Publishing](https://pypi.org/manage/account/publishing/), add a pending GitHub publisher with these values:
+
+| Field | Value |
+| --- | --- |
+| PyPI project name | `pressurecooker-video` |
+| Owner | `maxie-maxie` |
+| Repository | `pressurecooker` |
+| Workflow filename | `publish-pypi.yml` |
+| Environment | `pypi` |
+
+The first upload creates the PyPI project. For an existing project, add the same publisher in its Publishing settings. GitHub creates the `pypi` environment when the publishing job runs. Authentication uses GitHub's identity token; an API token or repository secret is unnecessary.
+
+### Publish a version
+
+For the first release, keep version `0.1.0`. For subsequent releases, update both `pyproject.toml` and `src/pressurecooker/__init__.py`, then commit and push. The release tag must be `v` followed by that version.
+
+From the repository root, publish the first GitHub release:
+
+```text
+gh release create v0.1.0 --target main --title "v0.1.0" --generate-notes
+```
+
+You can also publish a release from GitHub's Releases page. Drafts do not upload to PyPI. After the workflow succeeds, users can install with `pipx install pressurecooker-video`; FFmpeg and ffprobe remain separate requirements.
+
+To check the workflow without uploading, run it manually from the Actions page or use:
+
+```text
+gh workflow run publish-pypi.yml --ref main
+```
+
+Manual runs build and test the packages, then skip publishing. PyPI versions cannot be replaced; use a new version for each later release.
 
 ## License
 
