@@ -41,7 +41,7 @@ if [[ "$mode" == build ]]; then
     cd /work
     /tmp/pressurecooker-ci/bin/python -m pip install ".[build]"
     /tmp/pressurecooker-ci/bin/python scripts/build_binary.py
-    dist/pressurecooker-0.1.0-linux32 --version
+    dist/pressurecooker-*-linux32 --version
     /tmp/pressurecooker-ci/bin/python scripts/package_release.py
   '
   mkdir -p dist

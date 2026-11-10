@@ -61,7 +61,7 @@ jobs:
           "$buildEnv/bin/python" -m build
           "$buildEnv/bin/python" scripts/build_portable.py
           "$buildEnv/bin/python" scripts/build_binary.py
-          dist/pressurecooker-0.1.0-linux64 --version
+          dist/pressurecooker-*-linux64 --version
           "$buildEnv/bin/python" scripts/package_release.py
       - uses: actions/upload-artifact@v4
         with:

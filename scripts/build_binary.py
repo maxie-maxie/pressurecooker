@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import re
+import runpy
 import shutil
 import struct
 import subprocess
@@ -24,7 +25,7 @@ ENTRY = ROOT / "scripts" / "pressurecooker_entry.py"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 LICENSE_STAGE = BUILD / "licenses"
-VERSION = "0.1.0"
+VERSION = runpy.run_path(SRC / "pressurecooker" / "__init__.py")["__version__"]
 
 
 def build_name():

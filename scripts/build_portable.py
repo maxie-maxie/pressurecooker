@@ -1,5 +1,6 @@
 """Build a portable executable that requires Python 3.10 or newer."""
 
+import runpy
 import shutil
 import tempfile
 import zipapp
@@ -9,7 +10,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def main():
-    output = ROOT / "dist" / "pressurecooker-0.1.0.pyz"
+    version = runpy.run_path(ROOT / "src" / "pressurecooker" / "__init__.py")["__version__"]
+    output = ROOT / "dist" / f"pressurecooker-{version}.pyz"
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="pressurecooker-portable-") as temporary:
         stage = Path(temporary)
