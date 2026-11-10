@@ -81,11 +81,18 @@ Use `--ffmpeg` and `--ffprobe` to provide explicit executable paths.
 
 ## Installation
 
-The Python distribution is named `pressurecooker-video` and installs the `pressurecooker` command. It has not been published to PyPI. These instructions use a local source checkout or a built release file.
+The Python distribution is named `pressurecooker-video` and installs the `pressurecooker` command. With [pipx](https://pipx.pypa.io/stable/installation/) installed, install the release from [PyPI](https://pypi.org/project/pressurecooker-video/):
+
+```text
+pipx install pressurecooker-video
+pipx ensurepath
+```
+
+Open a new terminal after `pipx ensurepath`, then run `pressurecooker --help`. FFmpeg and ffprobe must be installed separately. Source installations and release files are described below.
 
 ### Python package
 
-Run these commands from the repository root.
+To install a source checkout, clone the repository as shown in [Quick start](#quick-start), then run these commands from its root.
 
 Linux:
 
