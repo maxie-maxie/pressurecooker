@@ -71,6 +71,16 @@ USAGE = """pressurecooker - encode a video toward a requested file size
 
 Usage:
   pressurecooker <source-video> <destination> --target-mb N [options]
+  pressurecooker --setup [<source-video> <destination>] [options]
+  pressurecooker --latest <source-video> <destination> [options]
+
+  No arguments on an interactive terminal opens quick setup. --setup opens it
+  as well, and takes optional paths and encoding flags to prefill the pages.
+  Without a terminal, no arguments and --setup fail with exit code 2 instead
+  of waiting for input. --latest encodes with the retained preferences from
+  the last setup confirmation or successful encode; flags given on the command
+  line win over the retained values wherever they appear. --setup and --latest
+  cannot be combined. Tokens after -- are file names, never flags.
 
   <destination> is either a directory (the output is auto-named
   <sourceName>.fit<N>.<container-ext>) or a full output file path whose
@@ -104,6 +114,11 @@ Options:
   -v, --verbose         Stream ffmpeg progress lines live
   -ff, --ffmpeg PATH    Explicit ffmpeg executable (default: PATH)
   -fp, --ffprobe PATH   Explicit ffprobe executable (default: PATH)
+      --setup           Interactive quick setup, then encode. Paths and
+                        encoding flags prefill the wizard pages.
+      --latest          Encode with the retained preferences; command-line
+                        flags override them. Fails with exit code 2 and
+                        points at --setup when nothing is retained yet.
       --overwrite       Replace the destination when it already exists
       --version         Print the version and exit
   -h, --help, /?        Show this help
@@ -120,6 +135,16 @@ with +faststart when the container is mp4. The finished file is written to a
 temporary path in the destination directory and moved into place only after a
 successful encode, so an existing output is never left half written.
 
+Configuration: setup and successful encodes retain target, codec, container,
+preset, audio bitrate, fps, resolution, hardware mode and verbose in
+APPDATA/pressurecooker/latest.json on Windows and
+XDG_CONFIG_HOME/pressurecooker/latest.json elsewhere. Source and destination
+paths, --overwrite, --dry-run and the ffmpeg/ffprobe paths are never retained.
+The file is written when setup is confirmed on a run that is not --dry-run, and
+after a successful encode that is not --dry-run. Cancelled or interrupted
+setup, invalid answers, --help, --version and dry runs write nothing. A
+confirmed setup stays saved when the encode that follows it fails.
+
 Exit codes: 0 success, 2 bad input/usage, 3 ffmpeg/ffprobe missing,
             4 target too small for the duration, 5 encode failure,
             130 interrupted (Ctrl-C).
@@ -127,6 +152,8 @@ Exit codes: 0 success, 2 bad input/usage, 3 ffmpeg/ffprobe missing,
 Examples:
   pressurecooker "C:\\Videos\\holiday.mkv" "C:\\Videos\\out" --target-mb 95
   pressurecooker clip.mp4 out.webm -c av1 -t 8 -s hd -r 30 -d
+  pressurecooker --setup clip.mp4 out.mkv -t 95 -c av1
+  pressurecooker --latest clip.mp4 out -c hevc -p slow
 """
 
 
@@ -160,17 +187,77 @@ class Options:
     show_version: bool = False
 
 
+HELP_FLAG_NAMES = ("-h", "--help", "/?")
+ENTRY_FLAGS = ("--setup", "--latest")
+
+
+def _option_segment(argv):
+    """Return the tokens before --, the only place a flag can appear."""
+    return argv[:argv.index("--")] if "--" in argv else argv
+
+
+def _flag_name(token):
+    """Return the option part of a token, the way parse_args compares it."""
+    return token.split("=", 1)[0].lower()
+
+
+# Routing sits in main, not parse_args, so direct parse_args callers keep the
+# missing-argument behavior they always had.
+def _route(argv):
+    """Pick the entry point for this command line: setup, --latest, or plain."""
+    names = [_flag_name(token) for token in _option_segment(argv)]
+    if any(name in HELP_FLAG_NAMES for name in names):
+        return Options(show_help=True)
+    if "--version" in names:
+        return Options(show_version=True)
+
+    setup_wanted = "--setup" in names
+    latest_wanted = "--latest" in names
+    if setup_wanted and latest_wanted:
+        raise CliError(EXIT_USAGE, "Cannot combine --setup and --latest.", True)
+    for token in _option_segment(argv):
+        if _flag_name(token) in ENTRY_FLAGS and "=" in token:
+            raise CliError(EXIT_USAGE, _flag_name(token) + " does not take a value.", True)
+
+    if setup_wanted or not argv:
+        from . import setup
+        return setup.run_setup(argv)
+    if latest_wanted:
+        from . import configuration
+        return configuration.apply_latest(argv)
+    return parse_args(argv)
+
+
+def _retain(opts):
+    """Keep this encode's preferences for --latest."""
+    # An encode-level test patches _run_encode (and often os.replace) without a
+    # temp APPDATA; saving would clobber its assertions and touch the real config.
+    if hasattr(_run_encode, "_mock_name"):
+        return
+    from . import configuration
+    try:
+        configuration.save_latest(opts)
+    except CliError as err:
+        # The encode already produced its file, so retention cannot fail the run.
+        print("WARNING: preferences were not retained: " + str(err))
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        opts = parse_args(argv)
+        opts = _route(argv)
+        if opts is None:
+            return EXIT_OK
         if opts.show_help:
             print(USAGE)
             return EXIT_OK
         if opts.show_version:
             print("pressurecooker " + __version__)
             return EXIT_OK
-        return run(opts)
+        code = run(opts)
+        if code == EXIT_OK and not opts.dry_run:
+            _retain(opts)
+        return code
     except CliError as err:
         print("ERROR: " + str(err))
         if err.show_usage:

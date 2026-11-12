@@ -21,12 +21,22 @@ pressurecooker video.mp4 output.mp4 -t 25
 
 Replace `video.mp4` with your file. Use `pressurecooker --help` to list flags. These commands work on Windows and Linux. See [Installation](#installation) for virtual environments and native executables.
 
+To avoid command-line flags, run the guided setup on an interactive terminal, then reuse your saved choices on the next file:
+
+```text
+pressurecooker --setup
+pressurecooker --latest video.mp4 output.mp4
+```
+
+See [Quick setup](#quick-setup) for the full walkthrough and saved preferences.
+
 ## Contents
 
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Release files](#release-files)
 - [Usage](#usage)
+- [Quick setup](#quick-setup)
 - [Options](#options)
 - [Encoding behavior](#encoding-behavior)
 - [Compatibility](#compatibility)
@@ -225,6 +235,62 @@ Preview commands without creating output files or directories:
 pressurecooker video.mp4 output/ -t 50 --dry-run
 ```
 
+## Quick setup
+
+Quick setup walks through the encoding choices in the terminal, so you do not have to remember the flags. It is a line-based wizard: read each page, type a value or a menu number, and press Enter to continue. There is no arrow-key navigation.
+
+**Unreleased.** `--setup` and `--latest` live in the repository source only. They are not in the published `v0.1.0` PyPI packages or GitHub Release assets, which remain at version `0.1.0` without quick setup.
+
+### Entry points
+
+Running `pressurecooker` with no arguments on an interactive terminal, or passing `--setup`, opens an 11-step setup wizard followed by a Review page:
+
+```text
+pressurecooker
+pressurecooker --setup video.mp4 output.mp4
+```
+
+Source and destination paths (and normal encoding flags) after `--setup` prefill the matching pages. `--setup` and `--latest` cannot be combined and exit with code 2. On a non-interactive terminal, a no-argument or `--setup` call prints usage and exits with code 2 instead of waiting for input.
+
+### Controls
+
+| Input | Effect |
+| --- | --- |
+| Menu number or typed value | Sets the field. Typed values cover target size (MiB), FPS, audio bitrate (kbps) and a custom `WxH` resolution; codec, container, preset, hardware and verbose use numbered choices. |
+| `Enter` | Keeps the current or default value and moves to the next step. |
+| `b` or `back` | Returns to the previous step and keeps your draft edits. |
+| `c`, `cancel`, `q`, `quit`, or end of input | Cancels without saving or encoding. |
+| `Ctrl-C` | Exits with code 130 without saving. |
+
+Clear an optional FPS or resolution back to the source default with `keep`, `source`, `none`, `clear`, `default`, or `0` for FPS when one is already set.
+
+The Review page lists every choice and accepts `Start` (`Enter` or `s`), `Back` (`b`), `Cancel` (`c`), a jump to any step by page number, `edit <N>`, or a field name.
+
+### Retained preferences and `--latest`
+
+```text
+pressurecooker --latest video.mp4 output.mp4
+```
+
+`--latest` loads the saved preferences and encodes without prompting. Flags given on the command line override the saved values, wherever they appear in the argument list. `--help` and `--version` neither read nor write configuration and never prompt.
+
+### Configuration file
+
+Preferences are stored as UTF-8 JSON (schema version 1) and written with an atomic file replacement:
+
+| Platform | Path |
+| --- | --- |
+| Windows | `%APPDATA%\pressurecooker\latest.json` (fallback `~\AppData\Roaming\pressurecooker\latest.json`) |
+| Linux | `$XDG_CONFIG_HOME/pressurecooker/latest.json` (fallback `~/.config/pressurecooker/latest.json`) |
+
+Retained fields: `target_mib`, `codec`, `container`, `preset`, `audio_kbps`, `fps`, `resolution`, `hw`, `verbose`. Source and destination paths, `--overwrite`, `--dry-run`, `--ffmpeg` and `--ffprobe` are never saved or replayed.
+
+### When preferences are saved
+
+A run writes the file only when setup is confirmed at `Start` on a non-dry-run invocation (the save remains even if the encode that follows it fails), or after a successful ordinary non-dry-run encode. `--dry-run` never writes configuration.
+
+A missing file is normal for `--setup`. `--latest` with no saved configuration exits with code 2 and points at `--setup`. A corrupt or incompatible file makes `--latest` fail with code 2 before any external tool runs, while `--setup` prints a warning and falls back to defaults until you confirm a new selection.
+
 ## Options
 
 | Option | Default | Description |
@@ -241,6 +307,8 @@ pressurecooker video.mp4 output/ -t 50 --dry-run
 | `-v`, `--verbose` | Off | Display FFmpeg progress. |
 | `-ff`, `--ffmpeg PATH` | PATH | FFmpeg executable path. |
 | `-fp`, `--ffprobe PATH` | PATH | ffprobe executable path. |
+| `--setup` | | Interactive quick setup, then encode. Optional paths and encoding flags prefill the pages. |
+| `--latest` | | Encode with saved preferences; command-line flags override them. |
 | `--overwrite` | Off | Replace an existing destination after successful encoding. |
 | `--version` | | Print the version. |
 | `-h`, `--help`, `/?` | | Show help. |
@@ -285,7 +353,7 @@ Existing output is refused unless `--overwrite` is set. Source files and their s
 | 5 | Encoding failure. |
 | 130 | Interrupted. |
 
-Running without arguments prints usage and exits with code 2.
+Running without arguments opens quick setup on an interactive terminal. When standard input is not a terminal, it prints usage and exits with code 2. See [Quick setup](#quick-setup).
 
 ## Compatibility
 
