@@ -60,10 +60,8 @@ func cloneRequest(req ffmpeg.Request) ffmpeg.Request {
 
 func containerExt(container string) string {
 	switch strings.ToLower(strings.TrimSpace(container)) {
-	case "mkv":
-		return "mkv"
-	case "webm":
-		return "webm"
+	case "mp4", "mkv", "webm", "mov", "avi", "ogg", "ts", "nut":
+		return strings.ToLower(strings.TrimSpace(container))
 	default:
 		return "mp4"
 	}

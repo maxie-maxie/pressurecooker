@@ -42,10 +42,38 @@ type metricScorer struct {
 }
 
 type scoredCandidate struct {
-	cand  candidate
-	mean  float64
-	p05   float64
-	count int
+	cand    candidate
+	mean    float64
+	p05     float64
+	count   int
+	encoder ffmpeg.Encoder
+	hw      string
+}
+
+func rankEncoderCandidates(scored []scoredCandidate, metric string) scoredCandidate {
+	var software []scoredCandidate
+	var gpu *scoredCandidate
+	bestSWScore := math.Inf(-1)
+	for i := range scored {
+		sc := &scored[i]
+		if sc.encoder.Hardware {
+			gpu = sc
+		} else {
+			software = append(software, *sc)
+			bestSWScore = math.Max(bestSWScore, guardedScore(sc.mean, sc.p05))
+		}
+	}
+	if len(software) == 0 {
+		return rankCandidates(scored)
+	}
+	threshold := 0.5
+	if metric == metricVMAF {
+		threshold = 1.0
+	}
+	if gpu != nil && guardedScore(gpu.mean, gpu.p05) >= bestSWScore-threshold-1e-9 {
+		return *gpu
+	}
+	return rankCandidates(software)
 }
 
 // detectMetric probes FFmpeg filters once per run and selects VMAF when libvmaf is available, else SSIM.

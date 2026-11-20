@@ -35,9 +35,11 @@ type bppBand struct {
 }
 
 var codecBPPBands = map[string]bppBand{
-	"h264": {lo: 0.08, hi: 0.18},
-	"hevc": {lo: 0.05, hi: 0.12},
-	"av1":  {lo: 0.04, hi: 0.10},
+	"h264":   {lo: 0.08, hi: 0.18},
+	"hevc":   {lo: 0.05, hi: 0.12},
+	"av1":    {lo: 0.04, hi: 0.10},
+	"vp9":    {lo: 0.05, hi: 0.12},
+	"theora": {lo: 0.10, hi: 0.24},
 }
 
 var standardShortSides = []int{2160, 1440, 1080, 720, 480, 360, 240, 180, 144}
@@ -74,17 +76,6 @@ func useSoftware(ctx context.Context, r ffmpeg.Runner, req *ffmpeg.Request) erro
 	}
 	req.Encoder, req.Settings.HW = enc, "off"
 	return nil
-}
-
-func canFallbackHW(req ffmpeg.Request) bool {
-	if !req.Encoder.Hardware {
-		return false
-	}
-	if isExplicit(req.Origins, "hw") {
-		return false
-	}
-	hw := strings.ToLower(strings.TrimSpace(req.Settings.HW))
-	return hw == "" || hw == "auto"
 }
 
 func buildResolutionRungs(req ffmpeg.Request) ([]resRung, error) {
@@ -228,6 +219,18 @@ func applyCandidate(orig config.Settings, cand candidate, media ffmpeg.Media) co
 
 func changedFields(orig, chosen config.Settings, media ffmpeg.Media, hwFallback bool) []string {
 	var changed []string
+	if orig.Codec != chosen.Codec {
+		changed = append(changed, "codec")
+	}
+	if orig.Container != chosen.Container {
+		changed = append(changed, "container")
+	}
+	if media.HasAudio && orig.AudioCodec != chosen.AudioCodec {
+		changed = append(changed, "audio_codec")
+	}
+	if orig.Preset != chosen.Preset {
+		changed = append(changed, "preset")
+	}
 	if !sameResolution(orig.Resolution, chosen.Resolution, media.Width, media.Height) {
 		changed = append(changed, "resolution")
 	}
@@ -280,8 +283,15 @@ func emitFieldSummary(onEvent func(console.Event), req ffmpeg.Request) {
 	if onEvent == nil {
 		return
 	}
-	fixed := []string{"codec", "container", "preset"}
+	fixed := []string{"preset"}
 	var adjustable []string
+	for _, field := range []string{"codec", "container"} {
+		if isExplicit(req.Origins, field) {
+			fixed = append(fixed, field)
+		} else {
+			adjustable = append(adjustable, field)
+		}
+	}
 
 	if isExplicit(req.Origins, "resolution") {
 		fixed = append(fixed, "resolution")
@@ -294,6 +304,11 @@ func emitFieldSummary(onEvent func(console.Event), req ffmpeg.Request) {
 		adjustable = append(adjustable, "fps")
 	}
 	if req.Media.HasAudio {
+		if isExplicit(req.Origins, "audio_codec") {
+			fixed = append(fixed, "audio_codec")
+		} else {
+			adjustable = append(adjustable, "audio_codec")
+		}
 		if isExplicit(req.Origins, "audio") {
 			fixed = append(fixed, "audio")
 		} else {
@@ -352,7 +367,8 @@ func isExplicit(origins config.Origins, key string) bool {
 	if origins == nil {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(string(origins[key])), "explicit")
+	origin := strings.ToLower(strings.TrimSpace(string(origins[key])))
+	return origin == "explicit" || key == "container" && (origin == "extension" || origin == "locked")
 }
 
 func roundEven(v float64) int {
