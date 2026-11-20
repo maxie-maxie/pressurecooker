@@ -1,25 +1,19 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Build and package output, including standalone binaries
+# Build outputs and binaries
 build/
 dist/
-*.spec
 *.exe
 *.dll
+*.so
+*.dylib
 
-# Test and tool caches
-.pytest_cache/
-.mypy_cache/
-.coverage
+# Go test and coverage output
+*.test
+*.out
+
+# Encoder scratch and pass logs
+*.part
+*f2pass*
+*.cutree*
 
 # Generated media and downloads
 *.mp4
@@ -28,6 +22,6 @@ dist/
 *.avi
 *.mov
 
-# Local work records and editor cruft
+# Local logs and editor files
 *.log
 .DS_Store

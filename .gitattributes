@@ -2,12 +2,12 @@
 * text=auto eol=lf
 
 # Text source
-*.py   text eol=lf
-*.md   text eol=lf
-*.toml text eol=lf
-*.cfg  text eol=lf
-*.yml  text eol=lf
-*.yaml text eol=lf
+*.go    text eol=lf
+go.mod  text eol=lf
+go.sum  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
 LICENSE text eol=lf
 
 # Binary and generated media should never be line-ending converted
