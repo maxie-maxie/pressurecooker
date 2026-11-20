@@ -2,19 +2,22 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/maxie-maxie/pressurecooker/internal/config"
 )
 
 var sessionTitles = map[string]string{
 	"start": "Start from preset", "label": "Label", "description": "Description",
 	"codec": "Codec", "container": "Container", "preset": "Encoder speed",
-	"quality": "Quality or CRF", "audio": "Audio", "fps": "FPS",
-	"resolution": "Resolution", "hw": "Hardware", "target": "Size", "review": "Review",
+	"quality": "Quality or CRF", "audio_codec": "Audio codec", "audio": "Audio",
+	"fps": "FPS", "resolution": "Resolution", "hw": "Hardware", "target": "Size", "review": "Review",
 }
 
 func (m *sessionModel) rawValue(key string) string {
@@ -35,6 +38,8 @@ func (m *sessionModel) rawValue(key string) string {
 			return trimNum(*s.CRF)
 		}
 		return s.Quality
+	case "audio_codec":
+		return s.AudioCodec
 	case "audio":
 		if s.AudioSource {
 			return "source"
@@ -66,6 +71,9 @@ func (m *sessionModel) rawValue(key string) string {
 }
 
 func (m *sessionModel) displayValue(key string) string {
+	if m.isStepSkipped(key) && key != "target" {
+		return "n/a"
+	}
 	value := m.rawValue(key)
 	switch key {
 	case "quality":
@@ -122,6 +130,83 @@ func (m *sessionModel) style(s string, kind string) string {
 	return style.Render(s)
 }
 
+func (m *sessionModel) renderReviewItems(selected int) []string {
+	var items []string
+	confirm := "Confirm"
+	if selected == 0 {
+		confirm = m.style(confirm, "selected")
+	}
+	items = append(items, confirm)
+	edited := m.editedFields()
+	rkeys := m.reviewKeys()
+	for i, key := range rkeys {
+		label := sessionTitles[key]
+		if m.isStepSkipped(key) && key != "target" {
+			line := label + ": n/a"
+			if !m.plain {
+				line = m.style(line, "help")
+			}
+			items = append(items, line)
+			continue
+		}
+		if key == "target" && m.isStepSkipped(key) {
+			line := label + ": " + m.displayValue(key)
+			if m.resets[key] {
+				line += " (reset)"
+			}
+			if m.plain {
+				line += " [unavailable: conversion only]"
+			} else {
+				line = m.style(line, "help")
+			}
+			items = append(items, line)
+			continue
+		}
+		if selected == i+1 {
+			label = m.style(label, "selected")
+		}
+		line := label + ": " + m.style(m.displayValue(key), "value")
+		if m.resets[key] {
+			line += " (reset)"
+		} else if edited[key] || (key == "quality" && edited["crf"]) {
+			line += " (edited)"
+		}
+		items = append(items, line)
+	}
+	return items
+}
+
+func (m *sessionModel) renderChoiceItems(selected int) []string {
+	key := m.key()
+	rawChoices := m.choices()
+	items := make([]string, len(rawChoices))
+	caps := config.CodecCaps(m.work.Settings.Codec)
+	probing := key == "hw" && m.hwProbingCodec == m.work.Settings.Codec
+	for i, raw := range rawChoices {
+		text := raw
+		if key == "container" && raw == config.Recommended(m.work.Settings.Codec) {
+			text += " (recommended)"
+		}
+		reason := ""
+		if probing && slices.Contains(caps.HW, raw) {
+			text += " (checking...)"
+		} else {
+			reason = m.optionReason(key, raw)
+		}
+		if reason != "" && m.plain {
+			text += " [unavailable: " + reason + "]"
+		}
+		if i == selected {
+			items[i] = m.style(text, "selected")
+		} else if reason != "" && !m.plain {
+			items[i] = m.style(text, "help")
+		} else {
+			items[i] = cleanSessionText(text)
+		}
+	}
+	return items
+}
+
 func (m *sessionModel) View() string {
 	title := "Setup"
 	if m.work.Mode == ModePreset {
@@ -131,27 +216,15 @@ func (m *sessionModel) View() string {
 	if m.work.Mode == ModeSetup {
 		header += "  " + m.style("an interactive TUI-type setup", "help")
 	}
-	lines := []string{header, "", m.style(sessionTitles[m.key()], "heading")}
+	stepTitle := sessionTitles[m.key()]
+	if m.key() == "start" && m.work.Mode == ModePreset {
+		stepTitle = "Select preset"
+	}
+	lines := []string{header, "", m.style(stepTitle, "heading")}
 	var items []string
 	selected := m.cur
 	if m.key() == "review" {
-		confirm := "Confirm"
-		if selected == 0 {
-			confirm = m.style(confirm, "selected")
-		}
-		items = append(items, confirm)
-		edited := m.editedFields()
-		for i, key := range m.steps[:len(m.steps)-1] {
-			label := sessionTitles[key]
-			if selected == i+1 {
-				label = m.style(label, "selected")
-			}
-			line := label + ": " + m.style(m.displayValue(key), "value")
-			if edited[key] || (key == "quality" && edited["crf"]) {
-				line += " (edited)"
-			}
-			items = append(items, line)
-		}
+		items = m.renderReviewItems(selected)
 	} else if m.textOnly() {
 		if m.key() == "target" {
 			lines = append(lines, m.style("MB; empty selects Conversion", "help"))
@@ -159,7 +232,7 @@ func (m *sessionModel) View() string {
 		lines = append(lines, "> "+m.style(m.text, "value"))
 	} else {
 		lines = append(lines, "Current: "+m.style(m.displayValue(m.key()), "value"))
-		items = m.choices()
+		items = m.renderChoiceItems(selected)
 	}
 	var tail []string
 	if !m.textOnly() && m.key() != "review" && (m.dirty || m.text != "") {
@@ -175,16 +248,10 @@ func (m *sessionModel) View() string {
 	}
 	for i := start; i < min(len(items), start+room); i++ {
 		marker := "  "
-		item := items[i]
 		if i == selected {
 			marker = "> "
-			if m.key() != "review" {
-				item = m.style(item, "selected")
-			}
-		} else if m.key() != "review" {
-			item = cleanSessionText(item)
 		}
-		lines = append(lines, marker+item)
+		lines = append(lines, marker+items[i])
 	}
 	lines = append(lines, tail...)
 	if len(lines) > m.height-1 {

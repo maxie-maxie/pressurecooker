@@ -1,0 +1,24 @@
+[1mSetup[0m  [2man interactive TUI-type setup[0m
+
+[1mReview[0m
+> [1;38;5;81mConfirm[0m
+  Codec: [38;5;229;48;5;236mprores[0m (edited)
+  Container: [38;5;229;48;5;236mmov[0m (reset)
+  [2mEncoder speed: n/a[0m
+  Quality or CRF: [38;5;229;48;5;236mbalanced[0m
+  Audio codec: [38;5;229;48;5;236maac[0m (reset)
+  Audio: [38;5;229;48;5;236msource[0m
+  FPS: [38;5;229;48;5;236msource[0m
+  Resolution: [38;5;229;48;5;236m1080p[0m
+  Hardware: [38;5;229;48;5;236mauto[0m
+  [2mSize: Conversion (reset)[0m
+
+
+
+
+
+
+
+
+
+[2mUp/Down select  Enter confirm/edit  Left/Shift+Tab back  Esc cancel  |  step 12/12  preset Default[0m

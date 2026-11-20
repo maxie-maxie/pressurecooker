@@ -1,0 +1,24 @@
+Setup  an interactive TUI-type setup
+
+Audio codec
+Current: aac
+  opus [unavailable: incompatible with mov]
+> aac
+  mp3
+  flac [unavailable: incompatible with mov]
+  ac3
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Up/Down select  Enter next  Left/Shift+Tab back  Esc cancel  |  step 6/12  preset Default

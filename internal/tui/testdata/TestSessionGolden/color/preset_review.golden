@@ -8,6 +8,7 @@
   Container: [38;5;229;48;5;236mmp4[0m
   Encoder speed: [38;5;229;48;5;236m8[0m
   Quality or CRF: [38;5;229;48;5;236mbalanced[0m
+  Audio codec: [38;5;229;48;5;236mopus[0m
   Audio: [38;5;229;48;5;236msource[0m
   FPS: [38;5;229;48;5;236msource[0m
   Resolution: [38;5;229;48;5;236m1080p[0m
@@ -20,5 +21,4 @@
 
 
 
-
-[2mUp/Down select  Enter confirm/edit  Left/Shift+Tab back  Esc cancel  |  step 10/10  preset Default[0m
+[2mUp/Down select  Enter confirm/edit  Left/Shift+Tab back  Esc cancel  |  step 11/11  preset Default[0m

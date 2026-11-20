@@ -59,6 +59,7 @@ func RunSession(ctx context.Context, s Session, o SessionOptions) (*Session, err
 		o.Out = io.Discard
 	}
 	m := newSessionModel(s, o)
+	m.ctx = ctx
 	f, terminal := o.In.(*os.File)
 	if !o.Terminal || !terminal || !term.IsTerminal(int(f.Fd())) {
 		return m.runSessionFallback(ctx, o)
@@ -104,6 +105,11 @@ func (m *sessionModel) runSessionFallback(ctx context.Context, o SessionOptions)
 	if _, err := fmt.Fprintln(o.Out, m.View()); err != nil {
 		return nil, err
 	}
+	if cmd := m.Init(); cmd != nil && m.status == statusRunning {
+		if err := m.runFallbackCmd(ctx, o.Out, cmd); err != nil {
+			return nil, err
+		}
+	}
 	type keyRead struct {
 		msg tea.KeyMsg
 		ok  bool
@@ -128,13 +134,46 @@ func (m *sessionModel) runSessionFallback(ctx context.Context, o SessionOptions)
 			if !k.ok {
 				return nil, nil
 			}
-			m.Update(k.msg)
-		}
-		if _, err := fmt.Fprintln(o.Out, m.View()); err != nil {
-			return nil, err
+			_, cmd := m.Update(k.msg)
+			if _, err := fmt.Fprintln(o.Out, m.View()); err != nil {
+				return nil, err
+			}
+			if cmd != nil && m.status == statusRunning {
+				if err := m.runFallbackCmd(ctx, o.Out, cmd); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	return sessionOutcome(m)
+}
+
+func (m *sessionModel) runFallbackCmd(ctx context.Context, out io.Writer, cmd tea.Cmd) error {
+	for cmd != nil && m.status == statusRunning {
+		done := make(chan tea.Msg, 1)
+		go func(c tea.Cmd) {
+			done <- c()
+		}(cmd)
+		select {
+		case <-ctx.Done():
+			return ErrInterrupted
+		case msg := <-done:
+			if ctx.Err() != nil {
+				return ErrInterrupted
+			}
+			if msg == nil {
+				return nil
+			}
+			if _, ok := msg.(tea.QuitMsg); ok {
+				return nil
+			}
+			_, cmd = m.Update(msg)
+			if _, err := fmt.Fprintln(out, m.View()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func readSessionKey(r *bufio.Reader) (tea.KeyMsg, bool) {

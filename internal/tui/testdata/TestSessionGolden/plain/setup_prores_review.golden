@@ -1,0 +1,24 @@
+Setup  an interactive TUI-type setup
+
+Review
+> Confirm
+  Codec: prores (edited)
+  Container: mov (reset)
+  Encoder speed: n/a
+  Quality or CRF: balanced
+  Audio codec: aac (reset)
+  Audio: source
+  FPS: source
+  Resolution: 1080p
+  Hardware: auto
+  Size: Conversion (reset) [unavailable: conversion only]
+
+
+
+
+
+
+
+
+
+Up/Down select  Enter confirm/edit  Left/Shift+Tab back  Esc cancel  |  step 12/12  preset Default

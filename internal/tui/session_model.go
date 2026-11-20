@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -15,6 +18,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/maxie-maxie/pressurecooker/internal/config"
+	"github.com/maxie-maxie/pressurecooker/internal/ffmpeg"
 )
 
 const (
@@ -26,29 +30,49 @@ const (
 
 var namedPresetChoices = []string{"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"}
 
+type hwProbeResultMsg struct {
+	codec string
+	avail ffmpeg.HWAvailability
+}
+
 type sessionModel struct {
-	base, work Session
-	presets    []config.Preset
-	steps      []string
-	idx, cur   int
-	active     int
-	status     int
-	width      int
-	height     int
-	text       string
-	msg        string
-	dirty      bool
-	moved      bool
-	fromReview bool
-	plain      bool
-	renderer   *lipgloss.Renderer
-	out        io.Writer
-	writeErr   error
+	ctx            context.Context
+	base, work     Session
+	presets        []config.Preset
+	steps          []string
+	idx, cur       int
+	active         int
+	status         int
+	width          int
+	height         int
+	text           string
+	msg            string
+	dirty          bool
+	moved          bool
+	fromReview     bool
+	plain          bool
+	renderer       *lipgloss.Renderer
+	out            io.Writer
+	writeErr       error
+	hwProbe        func(ctx context.Context, codec string) ffmpeg.HWAvailability
+	hwCache        map[string]ffmpeg.HWAvailability
+	hwProbingCodec string
+	pendingCmd     tea.Cmd
+	resets         map[string]bool
 }
 
 func newSessionModel(s Session, o SessionOptions) *sessionModel {
-	m := &sessionModel{work: cloneSession(s), plain: sessionPlain(o), width: 120, height: 24}
-	m.steps = []string{"start", "codec", "container", "preset", "quality", "audio", "fps", "resolution", "hw", "target", "review"}
+	m := &sessionModel{
+		ctx:     context.Background(),
+		work:    cloneSession(s),
+		plain:   sessionPlain(o),
+		width:   120,
+		height:  24,
+		hwProbe: o.HWProbe,
+		hwCache: make(map[string]ffmpeg.HWAvailability),
+		resets:  make(map[string]bool),
+	}
+	m.steps = []string{"start", "codec", "container", "preset", "quality", "audio_codec", "audio", "fps", "resolution", "hw", "target", "review"}
 	m.presets = append([]config.Preset(nil), o.Presets...)
 	if len(m.presets) == 0 {
 		m.presets = []config.Preset{config.FactoryPreset()}
@@ -60,7 +84,11 @@ func newSessionModel(s Session, o SessionOptions) *sessionModel {
 		}
 	}
 	if s.Mode == ModePreset {
-		m.steps = []string{"label", "description", "codec", "container", "preset", "quality", "audio", "fps", "resolution", "review"}
+		if s.Preset.ID == 0 {
+			m.steps = []string{"start", "label", "description", "codec", "container", "preset", "quality", "audio_codec", "audio", "fps", "resolution", "review"}
+		} else {
+			m.steps = []string{"label", "description", "codec", "container", "preset", "quality", "audio_codec", "audio", "fps", "resolution", "review"}
+		}
 		if s.Preset.Codec != "" {
 			m.work.Settings = s.Preset.Settings()
 		}
@@ -69,6 +97,9 @@ func newSessionModel(s Session, o SessionOptions) *sessionModel {
 	}
 	if m.work.Settings.Codec == "" {
 		m.work.Settings = m.presets[m.active].Settings()
+	}
+	if m.work.Settings.AudioCodec == "" {
+		m.work.Settings.AudioCodec = "opus"
 	}
 	m.base = cloneSession(m.work)
 	m.renderer = lipgloss.NewRenderer(o.Out)
@@ -109,41 +140,170 @@ func (m *sessionModel) textOnly() bool {
 	return m.key() == "label" || m.key() == "description" || m.key() == "target"
 }
 
+func (m *sessionModel) isStepSkipped(key string) bool {
+	caps := config.CodecCaps(m.work.Settings.Codec)
+	switch key {
+	case "preset":
+		return !caps.Speed
+	case "quality":
+		return !caps.Quality
+	case "audio":
+		return m.work.Settings.AudioCodec == "flac"
+	case "target":
+		return m.work.Mode == ModeSetup && !caps.SizeMode
+	}
+	return false
+}
+
+func (m *sessionModel) reviewKeys() []string {
+	keys := make([]string, 0, len(m.steps)-1)
+	for _, key := range m.steps[:len(m.steps)-1] {
+		if key != "start" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func (m *sessionModel) isReviewRowDisabled(key string) bool {
+	return m.isStepSkipped(key)
+}
+
+func (m *sessionModel) optionReason(key, val string) string {
+	s := m.work.Settings
+	switch key {
+	case "container":
+		if !config.Accepts(val, s.Codec, "") {
+			return fmt.Sprintf("incompatible with %s", s.Codec)
+		}
+	case "audio_codec":
+		if !config.Accepts(s.Container, "", val) {
+			return fmt.Sprintf("incompatible with %s", s.Container)
+		}
+	case "hw":
+		if val == "auto" || val == "off" {
+			return ""
+		}
+		caps := config.CodecCaps(s.Codec)
+		if !slices.Contains(caps.HW, val) {
+			return fmt.Sprintf("unsupported by %s", s.Codec)
+		}
+		if avail, ok := m.hwCache[s.Codec]; ok {
+			if reason := avail[val]; reason != "" {
+				return reason
+			}
+		}
+	}
+	return ""
+}
+
+func (m *sessionModel) isChoiceGreyed(key, val string) bool {
+	return m.optionReason(key, val) != ""
+}
+
 func (m *sessionModel) enterStep() {
 	m.cur, m.text, m.msg = 0, "", ""
 	m.dirty, m.moved = false, false
-	if m.key() == "review" {
+	key := m.key()
+	if key == "review" {
 		return
 	}
-	if m.key() == "start" {
+	if key == "start" {
 		m.cur = m.active
 		return
 	}
-	value := m.rawValue(m.key())
-	for i, choice := range m.choices() {
+	if key == "hw" {
+		codec := m.work.Settings.Codec
+		caps := config.CodecCaps(codec)
+		if m.hwProbe != nil && len(caps.HW) > 0 {
+			if _, ok := m.hwCache[codec]; !ok && m.hwProbingCodec != codec {
+				m.hwProbingCodec = codec
+				probe := m.hwProbe
+				ctx := m.ctx
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				m.pendingCmd = func() tea.Msg {
+					return hwProbeResultMsg{codec: codec, avail: probe(ctx, codec)}
+				}
+			}
+		}
+	}
+	choices := m.choices()
+	firstValid := 0
+	foundValid := false
+	for i, choice := range choices {
+		if !m.isChoiceGreyed(key, choice) {
+			firstValid = i
+			foundValid = true
+			break
+		}
+	}
+	value := m.rawValue(key)
+	for i, choice := range choices {
 		if value == choice {
-			m.cur = i
+			if !m.isChoiceGreyed(key, choice) {
+				m.cur = i
+			} else if foundValid {
+				m.cur = firstValid
+			}
 			return
 		}
+	}
+	if foundValid {
+		m.cur = firstValid
 	}
 	m.text = value
 }
 
+func (m *sessionModel) ensureValidCursor() {
+	key := m.key()
+	choices := m.choices()
+	if len(choices) == 0 {
+		return
+	}
+	if m.cur >= 0 && m.cur < len(choices) && !m.isChoiceGreyed(key, choices[m.cur]) {
+		return
+	}
+	for i, c := range choices {
+		if !m.isChoiceGreyed(key, c) {
+			m.cur = i
+			return
+		}
+	}
+}
+
 func (m *sessionModel) choices() []string {
-	switch m.key() {
+	return m.choicesFor(m.key())
+}
+
+func (m *sessionModel) choicesFor(key string) []string {
+	switch key {
 	case "start":
-		list := make([]string, len(m.presets))
+		list := make([]string, len(m.presets)+1)
 		for i, p := range m.presets {
 			list[i] = fmt.Sprintf("%d. %s", p.ID, p.Label)
 		}
+		if m.work.Mode == ModeSetup {
+			list[len(m.presets)] = "Setup manually"
+		} else {
+			list[len(m.presets)] = "New preset"
+		}
 		return list
 	case "codec":
-		return []string{"av1", "hevc", "h264"}
+		return config.VideoCodecs
 	case "container":
-		return []string{"mp4", "mkv", "webm"}
+		return config.Containers
 	case "preset":
-		if m.work.Settings.Codec == "av1" {
+		switch m.work.Settings.Codec {
+		case "av1":
 			list := make([]string, 14)
+			for i := range list {
+				list[i] = strconv.Itoa(i)
+			}
+			return list
+		case "vp9":
+			list := make([]string, 9)
 			for i := range list {
 				list[i] = strconv.Itoa(i)
 			}
@@ -152,6 +312,8 @@ func (m *sessionModel) choices() []string {
 		return namedPresetChoices
 	case "quality":
 		return []string{"high", "balanced", "small"}
+	case "audio_codec":
+		return config.AudioCodecs
 	case "audio":
 		return []string{"source", "128", "96", "64", "48"}
 	case "fps":
@@ -164,7 +326,11 @@ func (m *sessionModel) choices() []string {
 	return nil
 }
 
-func (m *sessionModel) Init() tea.Cmd { return nil }
+func (m *sessionModel) Init() tea.Cmd {
+	cmd := m.pendingCmd
+	m.pendingCmd = nil
+	return cmd
+}
 
 func (m *sessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.status != statusRunning {
@@ -175,14 +341,28 @@ func (m *sessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = max(1, msg.Width), max(1, msg.Height)
 	case tea.KeyMsg:
 		m.handleKey(msg)
+	case hwProbeResultMsg:
+		avail := msg.avail
+		if avail == nil {
+			avail = ffmpeg.HWAvailability{}
+		}
+		m.hwCache[msg.codec] = avail
+		if m.hwProbingCodec == msg.codec {
+			m.hwProbingCodec = ""
+		}
+		if m.key() == "hw" && m.work.Settings.Codec == msg.codec {
+			m.ensureValidCursor()
+		}
 	}
+	cmd := m.pendingCmd
+	m.pendingCmd = nil
 	if m.out != nil {
 		_, m.writeErr = fmt.Fprintln(m.out, m.View())
 	}
 	if m.status != statusRunning || m.writeErr != nil {
 		return m, tea.Quit
 	}
-	return m, nil
+	return m, cmd
 }
 
 func (m *sessionModel) handleKey(k tea.KeyMsg) {
@@ -203,9 +383,10 @@ func (m *sessionModel) handleKey(k tea.KeyMsg) {
 		return
 	}
 	if m.key() == "review" {
+		rkeys := m.reviewKeys()
 		switch k.Type {
 		case tea.KeyUp, tea.KeyDown:
-			m.moveSelection(k, len(m.steps))
+			m.moveSelection(k, 1+len(rkeys))
 		case tea.KeyEnter:
 			if m.cur == 0 {
 				if err := m.validate(); err != nil {
@@ -213,9 +394,18 @@ func (m *sessionModel) handleKey(k tea.KeyMsg) {
 				} else {
 					m.status = statusConfirmed
 				}
-			} else {
-				m.idx, m.fromReview = m.cur-1, true
-				m.enterStep()
+			} else if m.cur > 0 && m.cur <= len(rkeys) {
+				targetKey := rkeys[m.cur-1]
+				if m.isReviewRowDisabled(targetKey) {
+					return
+				}
+				for i, stepKey := range m.steps {
+					if stepKey == targetKey {
+						m.idx, m.fromReview = i, true
+						m.enterStep()
+						return
+					}
+				}
 			}
 		}
 		return
@@ -259,43 +449,109 @@ func (m *sessionModel) handleKey(k tea.KeyMsg) {
 }
 
 func (m *sessionModel) moveSelection(k tea.KeyMsg, n int) {
+	if n <= 0 {
+		return
+	}
 	delta := 1
 	if k.Type == tea.KeyUp {
 		delta = -1
 	}
-	m.cur = (m.cur + delta + n) % n
+	if m.key() == "review" {
+		rkeys := m.reviewKeys()
+		for step := 1; step <= n; step++ {
+			cand := (m.cur + delta*step%n + n) % n
+			if cand == 0 || !m.isReviewRowDisabled(rkeys[cand-1]) {
+				m.cur = cand
+				return
+			}
+		}
+		return
+	}
+	choices := m.choices()
+	for step := 1; step <= n; step++ {
+		cand := (m.cur + delta*step%n + n) % n
+		if !m.isChoiceGreyed(m.key(), choices[cand]) {
+			m.cur = cand
+			return
+		}
+	}
 }
 
 func (m *sessionModel) acceptStep() {
 	if m.key() == "start" {
-		if m.cur != m.active {
-			m.active = m.cur
-			m.work.Preset = m.presets[m.active]
-			s := m.work.Preset.Settings()
-			s.HW = m.work.Settings.HW
-			m.work.Settings = s
+		if m.work.Mode == ModeSetup {
+			if m.cur < len(m.presets) {
+				m.active = m.cur
+				m.work.ManualSetup = false
+				m.work.Preset = m.presets[m.active]
+				m.work.Settings = m.work.Preset.Settings()
+				m.status = statusConfirmed
+				return
+			}
+			m.work.ManualSetup = true
+			m.active = 0
+			m.work.Preset = m.presets[0]
+			m.work.Settings = m.presets[0].Settings()
+			m.base.Preset = m.work.Preset
+			m.base.Settings = m.work.Settings
+			m.resets = make(map[string]bool)
+		} else {
+			if m.cur < len(m.presets) {
+				m.active = m.cur
+				m.work.Preset = m.presets[m.active]
+				m.work.Settings = m.work.Preset.Settings()
+			} else {
+				maxID := 0
+				for _, p := range m.presets {
+					if p.ID > maxID {
+						maxID = p.ID
+					}
+				}
+				p := config.FactoryPreset()
+				p.ID = maxID + 1
+				p.Label = ""
+				p.Description = ""
+				m.work.Preset = p
+				m.work.Settings = p.Settings()
+			}
+			edited := m.base.Edited
+			m.base = cloneSession(m.work)
+			m.base.Edited = edited
+			m.resets = make(map[string]bool)
 		}
 	} else if m.dirty || m.textOnly() || m.moved {
 		value := m.text
 		if m.moved && !m.dirty {
-			value = m.choices()[m.cur]
+			choices := m.choices()
+			if m.cur < 0 || m.cur >= len(choices) || m.isChoiceGreyed(m.key(), choices[m.cur]) {
+				return
+			}
+			value = choices[m.cur]
 		}
 		if err := m.applyValue(m.key(), value); err != nil {
 			m.msg = err.Error()
 			return
 		}
+		delete(m.resets, m.key())
 	}
 	if m.fromReview {
 		m.idx, m.fromReview = len(m.steps)-1, false
 	} else {
 		m.idx++
+		for m.idx < len(m.steps)-1 && m.isStepSkipped(m.steps[m.idx]) {
+			m.idx++
+		}
 	}
 	m.enterStep()
 }
 
 func (m *sessionModel) backStep() {
-	if m.idx > 0 {
-		m.idx--
+	idx := m.idx - 1
+	for idx > 0 && m.isStepSkipped(m.steps[idx]) {
+		idx--
+	}
+	if idx >= 0 {
+		m.idx = idx
 		m.fromReview = false
 		m.enterStep()
 	}
@@ -318,36 +574,64 @@ func (m *sessionModel) applyValue(key, raw string) error {
 			return fmt.Errorf("description must be at most 120 characters")
 		}
 		m.work.Preset.Description = raw
-	case "codec", "container", "hw":
-		allowed := map[string][]string{"codec": {"av1", "hevc", "h264"}, "container": {"mp4", "mkv", "webm"}, "hw": {"auto", "vulkan", "qsv", "off"}}
-		if !inList(value, allowed[key]...) {
-			return fmt.Errorf("%s must be %s", key, strings.Join(allowed[key], ", "))
+	case "codec":
+		if !slices.Contains(config.VideoCodecs, value) {
+			return fmt.Errorf("codec must be %s", strings.Join(config.VideoCodecs, ", "))
 		}
-		switch key {
-		case "codec":
-			s.Codec = value
-		case "container":
-			s.Container = value
-		case "hw":
-			s.HW = value
+		old := s.Codec
+		s.Codec = value
+		if old != s.Codec {
+			m.resetAfterCodecChange()
 		}
+	case "container":
+		if !slices.Contains(config.Containers, value) {
+			return fmt.Errorf("container must be %s", strings.Join(config.Containers, ", "))
+		}
+		if reason := m.optionReason("container", value); reason != "" {
+			return fmt.Errorf("%s is unavailable: %s", value, reason)
+		}
+		old := s.Container
+		s.Container = value
+		if old != s.Container {
+			m.resetAfterContainerChange()
+		}
+	case "audio_codec":
+		if !slices.Contains(config.AudioCodecs, value) {
+			return fmt.Errorf("audio codec must be %s", strings.Join(config.AudioCodecs, ", "))
+		}
+		if reason := m.optionReason("audio_codec", value); reason != "" {
+			return fmt.Errorf("%s is unavailable: %s", value, reason)
+		}
+		old := s.AudioCodec
+		s.AudioCodec = value
+		if old != s.AudioCodec {
+			m.resetAfterAudioCodecChange()
+		}
+	case "hw":
+		if !inList(value, "auto", "vulkan", "qsv", "off") {
+			return fmt.Errorf("hw must be auto, vulkan, qsv, off")
+		}
+		if reason := m.optionReason("hw", value); reason != "" {
+			return fmt.Errorf("%s is unavailable: %s", value, reason)
+		}
+		s.HW = value
 	case "preset":
 		if _, err := config.ResolvePreset(value, s.Codec, false); err != nil {
 			return err
 		}
 		s.Preset = value
 	case "quality":
+		caps := config.CodecCaps(s.Codec)
 		if inList(value, "high", "balanced", "small") {
 			s.Quality, s.CRF = value, nil
 			return nil
 		}
-		n, err := strconv.ParseFloat(value, 64)
-		lo, hi := 0.0, 51.0
-		if s.Codec == "av1" {
-			lo, hi = 1, 63
+		if caps.CRFHi == 0 {
+			return fmt.Errorf("CRF is not supported for %s; choose high, balanced or small", s.Codec)
 		}
-		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || n < lo || n > hi {
-			return fmt.Errorf("CRF for %s must be %.0f-%.0f", s.Codec, lo, hi)
+		n, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || n < caps.CRFLo || n > caps.CRFHi {
+			return fmt.Errorf("CRF for %s must be %.0f-%.0f", s.Codec, caps.CRFLo, caps.CRFHi)
 		}
 		s.Quality, s.CRF = "", &n
 	case "audio":
@@ -408,10 +692,74 @@ func (m *sessionModel) applyValue(key, raw string) error {
 	return nil
 }
 
+func (m *sessionModel) resetAfterCodecChange() {
+	s := &m.work.Settings
+	caps := config.CodecCaps(s.Codec)
+	if !config.Accepts(s.Container, s.Codec, "") {
+		s.Container = config.Recommended(s.Codec)
+		m.resets["container"] = true
+	}
+	if !caps.Speed {
+		s.Preset = ""
+		delete(m.resets, "preset")
+	} else if _, err := config.ResolvePreset(s.Preset, s.Codec, false); err != nil {
+		s.Preset = m.choicesFor("preset")[0]
+		m.resets["preset"] = true
+	}
+	if !caps.Quality {
+		s.Quality, s.CRF = "", nil
+		delete(m.resets, "quality")
+	} else {
+		invalidQuality := (s.Quality == "" && s.CRF == nil) ||
+			(s.CRF != nil && (caps.CRFHi == 0 || *s.CRF < caps.CRFLo || *s.CRF > caps.CRFHi))
+		if invalidQuality {
+			s.Quality, s.CRF = "high", nil
+			m.resets["quality"] = true
+		}
+	}
+	m.resetAfterContainerChange()
+	if m.work.Mode == ModeSetup {
+		if s.HW == "vulkan" || s.HW == "qsv" {
+			if m.optionReason("hw", s.HW) != "" || s.CRF != nil {
+				s.HW = "auto"
+				m.resets["hw"] = true
+			}
+		}
+		if !caps.SizeMode && m.work.TargetBytes != nil {
+			m.work.TargetBytes = nil
+			m.resets["target"] = true
+		}
+	}
+}
+
+func (m *sessionModel) resetAfterContainerChange() {
+	s := &m.work.Settings
+	if !config.Accepts(s.Container, "", s.AudioCodec) {
+		for _, ac := range config.AudioCodecs {
+			if config.Accepts(s.Container, "", ac) {
+				s.AudioCodec = ac
+				m.resets["audio_codec"] = true
+				break
+			}
+		}
+	}
+	m.resetAfterAudioCodecChange()
+}
+
+func (m *sessionModel) resetAfterAudioCodecChange() {
+	s := &m.work.Settings
+	if s.AudioCodec != "flac" && !s.AudioSource && s.AudioKbps <= 0 {
+		s.AudioSource = true
+		s.AudioKbps = 128
+		m.resets["audio"] = true
+	}
+}
+
 func (m *sessionModel) resultPreset() config.Preset {
 	p, s := m.work.Preset, config.Clone(m.work.Settings)
 	p.Codec, p.Container, p.Speed = s.Codec, s.Container, s.Preset
 	p.Quality, p.CRF, p.FPS, p.Resolution = s.Quality, s.CRF, s.FPS, s.Resolution
+	p.AudioCodec = s.AudioCodec
 	p.AudioKbps = nil
 	if !s.AudioSource {
 		p.AudioKbps = &s.AudioKbps
@@ -423,22 +771,40 @@ func (m *sessionModel) validate() error {
 	p := m.resultPreset()
 	if m.work.Mode == ModeSetup {
 		p.ID, p.Label, p.Description = 0, "Setup", ""
-		if m.work.TargetBytes != nil && *m.work.TargetBytes <= 0 {
-			return fmt.Errorf("size must be a positive byte count")
+		if m.work.TargetBytes != nil {
+			if !config.CodecCaps(m.work.Settings.Codec).SizeMode {
+				return fmt.Errorf("%s supports conversion mode only", m.work.Settings.Codec)
+			}
+			if *m.work.TargetBytes <= 0 {
+				return fmt.Errorf("size must be a positive byte count")
+			}
 		}
-		hw := m.work.Settings.HW
-		if !inList(hw, "auto", "vulkan", "qsv", "off") {
-			return fmt.Errorf("hardware must be auto, vulkan, qsv or off")
+		if reason := m.optionReason("hw", m.work.Settings.HW); reason != "" {
+			return fmt.Errorf("hardware %s is unavailable: %s", m.work.Settings.HW, reason)
 		}
-		if p.CRF != nil && (hw == "vulkan" || hw == "qsv") {
-			return fmt.Errorf("raw CRF is unsupported on %s", hw)
+		check := config.Clone(m.work.Settings)
+		if check.AudioSource && check.AudioKbps <= 0 {
+			check.AudioKbps = 128
+		}
+		if err := config.Validate(check); err != nil {
+			return err
 		}
 	}
-	return config.ValidatePreset(p)
+	if err := config.ValidatePreset(p); err != nil {
+		return err
+	}
+	if m.work.Mode == ModePreset && !config.CodecCaps(p.Codec).Quality && (p.Quality != "" || p.CRF != nil) {
+		return errors.New("ffv1 does not accept quality or crf")
+	}
+	return nil
 }
 
 func (m *sessionModel) finalSession() Session {
 	s := cloneSession(m.work)
+	if s.Mode == ModeSetup && !s.ManualSetup {
+		s.Edited = map[string]bool{}
+		return s
+	}
 	if s.Mode == ModePreset {
 		s.Preset = m.resultPreset()
 		s.Settings = s.Preset.Settings()
@@ -467,8 +833,8 @@ func sessionFields(s Session) map[string]any {
 	v := s.Settings
 	fields := map[string]any{
 		"codec": v.Codec, "container": v.Container, "preset": v.Preset,
-		"quality": v.Quality, "crf": v.CRF, "audio": sessionAudio(v),
-		"fps": v.FPS, "resolution": v.Resolution,
+		"quality": v.Quality, "crf": v.CRF, "audio_codec": v.AudioCodec,
+		"audio": sessionAudio(v), "fps": v.FPS, "resolution": v.Resolution,
 	}
 	if s.Mode == ModeSetup {
 		fields["target"], fields["hw"] = s.TargetBytes, v.HW

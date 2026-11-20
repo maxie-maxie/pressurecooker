@@ -1,0 +1,24 @@
+Setup  an interactive TUI-type setup
+
+Hardware
+Current: auto
+> auto
+  vulkan [unavailable: no supported GPU]
+  qsv
+  off
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Up/Down select  Enter next  Left/Shift+Tab back  Esc cancel  |  step 10/12  preset Default
