@@ -13,6 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/maxie-maxie/pressurecooker/internal/config"
+	"github.com/maxie-maxie/pressurecooker/internal/ffmpeg"
 )
 
 var ErrInterrupted = errors.New("interrupted")
@@ -30,6 +31,7 @@ type Session struct {
 	Preset      config.Preset // ModePreset result; Setup start-from choice
 	TargetBytes *int64        // Setup only; nil = Conversion
 	Edited      map[string]bool
+	ManualSetup bool // Setup: false means a saved preset was chosen in one click
 }
 
 type SessionOptions struct {
@@ -37,6 +39,7 @@ type SessionOptions struct {
 	In       io.Reader
 	Out      io.Writer
 	Terminal bool // false: plain mode
+	HWProbe  func(ctx context.Context, codec string) ffmpeg.HWAvailability
 }
 
 func RunSession(ctx context.Context, s Session, o SessionOptions) (*Session, error) {

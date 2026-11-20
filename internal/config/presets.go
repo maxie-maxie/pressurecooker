@@ -25,6 +25,7 @@ type Preset struct {
 	AudioKbps   *int     `json:"audio_kbps"` // nil: keep source audio
 	FPS         *float64 `json:"fps"`        // nil: source; otherwise a cap
 	Resolution  string   `json:"resolution"` // "": source; otherwise a cap
+	AudioCodec  string   `json:"-"`          // v4 contract; serialized from schema v4
 }
 
 func FactoryPreset() Preset {

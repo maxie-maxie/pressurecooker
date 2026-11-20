@@ -18,6 +18,7 @@ type Settings struct {
 	CRF         *float64 `json:"crf"`
 	AudioKbps   int      `json:"audio_kbps"`
 	AudioSource bool     `json:"-"`
+	AudioCodec  string   `json:"-"` // v4 contract; serialized from schema v4
 	FPS         *float64 `json:"fps"`
 	Resolution  string   `json:"resolution"`
 	HW          string   `json:"hw"`

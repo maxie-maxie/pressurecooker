@@ -21,6 +21,11 @@ dist/
 *.webm
 *.avi
 *.mov
+*.qt
+*.ogg
+*.ogv
+*.ts
+*.nut
 
 # Local logs and editor files
 *.log
