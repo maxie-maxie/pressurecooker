@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -35,6 +36,21 @@ func Accepts(container, videoCodec, audioCodec string) bool {
 		return false
 	}
 	return audioCodec == "" || slices.Contains(rule.audio, audioCodec)
+}
+
+func formatChoiceList(items []string) string {
+	if len(items) <= 1 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " or " + items[len(items)-1]
+}
+
+func videoMismatchError(container, codec string) error {
+	return fmt.Errorf("%s does not accept %s; use -c %s", container, codec, formatChoiceList(muxRules[container].video))
+}
+
+func audioMismatchError(container, audioCodec string) error {
+	return fmt.Errorf("%s does not accept %s; use -ac %s", container, audioCodec, formatChoiceList(muxRules[container].audio))
 }
 
 func Recommended(videoCodec string) string {

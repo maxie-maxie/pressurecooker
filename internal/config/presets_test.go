@@ -15,7 +15,7 @@ func integer(value int) *int { return &value }
 func TestFactoryPreset(t *testing.T) {
 	want := Preset{
 		ID: 1, Label: "Default", Description: "AV1, 1080p max, source audio and FPS",
-		Codec: "av1", Container: "mp4", Speed: "8", Quality: "balanced", Resolution: "1080p",
+		Codec: "av1", Container: "mp4", Speed: "8", Quality: "balanced", AudioCodec: "opus", Resolution: "1080p",
 	}
 	if got := FactoryPreset(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v want %+v", got, want)
@@ -27,14 +27,24 @@ func TestFactoryPreset(t *testing.T) {
 
 func TestValidatePreset(t *testing.T) {
 	for name, change := range map[string]func(*Preset){
-		"negative id":   func(p *Preset) { p.ID = -1 },
-		"blank label":   func(p *Preset) { p.Label = " \t" },
-		"long label":    func(p *Preset) { p.Label = strings.Repeat("é", 41) },
-		"long desc":     func(p *Preset) { p.Description = strings.Repeat("x", 121) },
-		"codec":         func(p *Preset) { p.Codec = "vp9" },
-		"container":     func(p *Preset) { p.Container = "avi" },
-		"webm":          func(p *Preset) { p.Codec, p.Container, p.Speed = "hevc", "webm", "fast" },
-		"speed":         func(p *Preset) { p.Speed = "14" },
+		"negative id": func(p *Preset) { p.ID = -1 },
+		"blank label": func(p *Preset) { p.Label = " \t" },
+		"long label":  func(p *Preset) { p.Label = strings.Repeat("é", 41) },
+		"long desc":   func(p *Preset) { p.Description = strings.Repeat("x", 121) },
+		"codec":       func(p *Preset) { p.Codec = "mpeg2" },
+		"container":   func(p *Preset) { p.Container = "flv" },
+		"audio_codec": func(p *Preset) { p.AudioCodec = "wav" },
+		"webm":        func(p *Preset) { p.Codec, p.Container, p.Speed = "hevc", "webm", "fast" },
+		"mov_av1":     func(p *Preset) { p.Container, p.AudioCodec = "mov", "aac" },
+		"mov_opus":    func(p *Preset) { p.Codec, p.Container, p.Speed = "h264", "mov", "fast" },
+		"speed":       func(p *Preset) { p.Speed = "14" },
+		"vp9_speed_9": func(p *Preset) { p.Codec, p.Speed = "vp9", "9" },
+		"prores_crf": func(p *Preset) {
+			p.Codec, p.Container, p.Quality, p.CRF, p.AudioCodec = "prores", "mov", "", number(20), "aac"
+		},
+		"ffv1_crf":      func(p *Preset) { p.Codec, p.Quality, p.CRF = "ffv1", "", number(20) },
+		"theora_crf":    func(p *Preset) { p.Codec, p.Container, p.Quality, p.CRF = "theora", "ogg", "", number(6) },
+		"prores_noqual": func(p *Preset) { p.Codec, p.Container, p.Quality, p.AudioCodec = "prores", "mov", "", "aac" },
 		"both rate":     func(p *Preset) { p.CRF = number(30) },
 		"no rate":       func(p *Preset) { p.Quality = "" },
 		"quality":       func(p *Preset) { p.Quality = "best" },
@@ -74,8 +84,13 @@ func TestPresetSettings(t *testing.T) {
 	}
 
 	s = FactoryPreset().Settings()
-	if !s.AudioSource || s.AudioKbps != 128 || s.CRF != nil || s.FPS != nil {
+	if !s.AudioSource || s.AudioKbps != 128 || s.AudioCodec != "opus" || s.CRF != nil || s.FPS != nil {
 		t.Fatalf("source defaults: %+v", s)
+	}
+	legacy := FactoryPreset()
+	legacy.AudioCodec = ""
+	if got := legacy.Settings().AudioCodec; got != "opus" {
+		t.Fatalf("empty preset audio_codec defaulted to %q, want opus", got)
 	}
 }
 
@@ -161,7 +176,7 @@ func TestPresetStrictJSON(t *testing.T) {
 	valid, err := json.Marshal(struct {
 		Version int      `json:"version"`
 		Presets []Preset `json:"presets"`
-	}{3, []Preset{FactoryPreset()}})
+	}{4, []Preset{FactoryPreset()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,16 +187,20 @@ func TestPresetStrictJSON(t *testing.T) {
 	cases := map[string][]byte{
 		"non-object":       []byte(`[]`),
 		"trailing":         append(append([]byte{}, valid...), []byte(` true`)...),
-		"root duplicate":   []byte(strings.Replace(string(valid), `"version":3`, `"version":3,"version":3`, 1)),
-		"root unknown":     []byte(strings.Replace(string(valid), `"version":3`, `"version":3,"extra":1`, 1)),
+		"root duplicate":   []byte(strings.Replace(string(valid), `"version":4`, `"version":4,"version":4`, 1)),
+		"root unknown":     []byte(strings.Replace(string(valid), `"version":4`, `"version":4,"extra":1`, 1)),
 		"preset duplicate": []byte(strings.Replace(string(valid), `"id":1`, `"id":1,"id":1`, 1)),
 		"preset unknown":   []byte(strings.Replace(string(valid), `"id":1`, `"id":1,"extra":1`, 1)),
 		"missing label":    []byte(strings.Replace(string(valid), `"label":"Default",`, ``, 1)),
+		"missing audioc":   []byte(strings.Replace(string(valid), `"audio_codec":"opus",`, ``, 1)),
+		"null audioc":      []byte(strings.Replace(string(valid), `"audio_codec":"opus"`, `"audio_codec":null`, 1)),
 		"null description": []byte(strings.Replace(string(valid), `"description":"AV1, 1080p max, source audio and FPS"`, `"description":null`, 1)),
 		"null resolution":  []byte(strings.Replace(string(valid), `"resolution":"1080p"`, `"resolution":null`, 1)),
 		"both rate":        []byte(strings.Replace(string(valid), `"quality":"balanced"`, `"quality":"balanced","crf":38`, 1)),
 		"no rate":          []byte(strings.Replace(string(valid), `,"quality":"balanced"`, ``, 1)),
 		"zero id":          []byte(strings.Replace(string(valid), `"id":1`, `"id":0`, 1)),
+		"v3 with audioc":   []byte(strings.Replace(string(valid), `"version":4`, `"version":3`, 1)),
+		"v5 unsupported":   []byte(strings.Replace(string(valid), `"version":4`, `"version":5`, 1)),
 	}
 	duplicateIDs := root
 	duplicateIDs["presets"] = []any{FactoryPreset(), FactoryPreset()}
@@ -198,5 +217,68 @@ func TestPresetStrictJSON(t *testing.T) {
 			}
 			assertFile(t, path, data)
 		})
+	}
+}
+
+func TestPresetV3MigrationPreservesBytes(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	path := filepath.Join(s.Dir, "presets.json")
+	before := []byte(`{"version":3,"presets":[{"id":1,"label":"Default","description":"v3 preset","codec":"av1","container":"mp4","preset":"8","quality":"balanced","audio_kbps":null,"fps":null,"resolution":"1080p"}]}`)
+	if err := os.WriteFile(path, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	want := Preset{
+		ID: 1, Label: "Default", Description: "v3 preset",
+		Codec: "av1", Container: "mp4", Speed: "8", Quality: "balanced",
+		AudioCodec: "opus", Resolution: "1080p",
+	}
+	for range 2 {
+		got, err := s.LoadPresets()
+		if err != nil || len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+			t.Fatalf("v3 migration: %+v %v", got, err)
+		}
+		assertFile(t, path, before)
+	}
+	p2 := FactoryPreset()
+	p2.ID, p2.Label, p2.Codec, p2.Container, p2.AudioCodec = 2, "Archival", "ffv1", "mkv", "flac"
+	p2.Speed, p2.Quality = "", ""
+	if _, err := s.SavePreset(p2); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), `"version": 4`) || !strings.Contains(string(after), `"audio_codec": "opus"`) {
+		t.Fatalf("expected v4 upgrade on save: %s", after)
+	}
+}
+
+func TestPresetFFV1RoundTrip(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	p := Preset{
+		ID: 1, Label: "Lossless", Description: "FFV1 + FLAC",
+		Codec: "ffv1", Container: "mkv", AudioCodec: "flac",
+	}
+	if _, err := s.SavePreset(p); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(s.Dir, "presets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"quality"`) || strings.Contains(string(data), `"crf"`) {
+		t.Fatalf("ffv1 payload should omit quality/crf: %s", data)
+	}
+	got, err := s.LoadPresets()
+	if err != nil || len(got) != 1 || !reflect.DeepEqual(got[0], p) {
+		t.Fatalf("ffv1 round trip: %+v %v", got, err)
+	}
+	badCRF := []byte(`{"version":4,"presets":[{"id":1,"label":"Lossless","description":"","codec":"ffv1","container":"mkv","preset":"","crf":0,"audio_codec":"flac","audio_kbps":null,"fps":null,"resolution":""}]}`)
+	if err := os.WriteFile(filepath.Join(s.Dir, "presets.json"), badCRF, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LoadPresets(); err == nil {
+		t.Fatal("accepted ffv1 preset with crf")
 	}
 }

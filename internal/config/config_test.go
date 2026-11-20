@@ -201,8 +201,9 @@ func TestJSONNumericTypes(t *testing.T) {
 
 func TestBadChoiceSettings(t *testing.T) {
 	for _, change := range []func(*Settings){
-		func(s *Settings) { s.Codec = "vp9" }, func(s *Settings) { s.Codec = "HEVC" },
-		func(s *Settings) { s.Container = "avi" }, func(s *Settings) { s.Container = "mp4 " },
+		func(s *Settings) { s.Codec = "mpeg2" }, func(s *Settings) { s.Codec = "HEVC" },
+		func(s *Settings) { s.Container = "flv" }, func(s *Settings) { s.Container = "mp4 " },
+		func(s *Settings) { s.AudioCodec = "" }, func(s *Settings) { s.AudioCodec = "wav" }, func(s *Settings) { s.AudioCodec = "OPUS" },
 		func(s *Settings) { s.HW = "cuda" }, func(s *Settings) { s.HW = "AUTO" },
 		func(s *Settings) { s.Preset = "bogus" }, func(s *Settings) { s.Preset = "" },
 		func(s *Settings) { s.Quality = "best" }, func(s *Settings) { s.Resolution = "wide" },
@@ -220,10 +221,37 @@ func TestIncompatibleSettings(t *testing.T) {
 	for _, change := range []func(*Settings){
 		func(s *Settings) { s.Container = "webm" },
 		func(s *Settings) { s.Codec = "h264"; s.Container = "webm" },
+		func(s *Settings) { s.Codec = "av1"; s.Container = "mov"; s.Preset = "8"; s.AudioCodec = "aac" },
+		func(s *Settings) { s.Codec = "av1"; s.Container = "ogg"; s.Preset = "8" },
+		func(s *Settings) { s.Codec = "theora"; s.Container = "ogg"; s.AudioCodec = "aac" },
+		func(s *Settings) { s.Codec = "av1"; s.Container = "avi"; s.Preset = "8"; s.AudioCodec = "opus" },
+		func(s *Settings) { s.Container = "mov"; s.AudioCodec = "opus" },
+		func(s *Settings) { s.Codec = "av1"; s.Container = "webm"; s.Preset = "8"; s.AudioCodec = "aac" },
 		func(s *Settings) { s.Preset = "8" },
 		func(s *Settings) { s.Codec = "h264"; s.Preset = "13" },
 		func(s *Settings) { s.Codec = "h264"; s.Preset = "3"; s.HW = "qsv" },
 		func(s *Settings) { s.Codec = "av1"; s.Preset = "14" },
+		func(s *Settings) { s.Codec = "vp9"; s.Preset = "9" },
+		func(s *Settings) { s.Codec = "vp9"; s.Preset = "13" },
+		func(s *Settings) { s.Codec = "vp9"; s.Preset = "9"; s.HW = "qsv" },
+		func(s *Settings) { s.Codec = "vp9"; s.HW = "vulkan" },
+		func(s *Settings) { s.Codec = "prores"; s.Container = "mov"; s.AudioCodec = "aac"; s.HW = "qsv" },
+		func(s *Settings) { s.Codec = "ffv1"; s.HW = "qsv" },
+		func(s *Settings) { s.Codec = "theora"; s.Container = "ogg"; s.HW = "vulkan" },
+		func(s *Settings) { s.Codec = "theora"; s.Container = "ogg"; s.HW = "qsv" },
+		func(s *Settings) {
+			s.Codec = "prores"
+			s.Container = "mov"
+			s.AudioCodec = "aac"
+			s.Quality = ""
+			s.CRF = number(20)
+		},
+		func(s *Settings) { s.Codec = "ffv1"; s.Quality = ""; s.CRF = number(20) },
+		func(s *Settings) { s.Codec = "theora"; s.Container = "ogg"; s.Quality = ""; s.CRF = number(6) },
+		func(s *Settings) { s.Codec = "prores"; s.Container = "mov"; s.AudioCodec = "aac"; s.Quality = "" },
+		func(s *Settings) { s.Codec = "theora"; s.Container = "ogg"; s.Quality = "" },
+		func(s *Settings) { s.Quality = "balanced"; s.CRF = number(28) },
+		func(s *Settings) { s.Quality = "" },
 	} {
 		s := Factory()
 		change(&s)
@@ -233,9 +261,75 @@ func TestIncompatibleSettings(t *testing.T) {
 	}
 	for _, hw := range []string{"qsv", "vulkan"} {
 		s := Factory()
-		s.HW, s.CRF = hw, number(28)
+		s.HW, s.Quality, s.CRF = hw, "", number(28)
 		if err := Validate(s); err == nil || !strings.Contains(err.Error(), "use --quality or --hw off") {
 			t.Fatalf("hardware CRF: %v", err)
+		}
+	}
+}
+
+func TestVP9PresetsAndNoSpeedCodecs(t *testing.T) {
+	for i, input := range []string{"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"} {
+		got, err := ResolvePreset(input, "vp9", false)
+		want := []string{"8", "7", "6", "5", "4", "3", "2", "1", "0", "0"}[i]
+		if err != nil || got != want {
+			t.Fatalf("vp9 %s: got %q err %v, want %q", input, got, err, want)
+		}
+		wantQSV := input
+		if i < 2 {
+			wantQSV = "veryfast"
+		} else if input == "placebo" {
+			wantQSV = "veryslow"
+		}
+		gotQSV, err := ResolvePreset(input, "vp9", true)
+		if err != nil || gotQSV != wantQSV {
+			t.Fatalf("vp9 qsv %s: got %q err %v, want %q", input, gotQSV, err, wantQSV)
+		}
+	}
+	for n := 0; n <= 8; n++ {
+		got, err := ResolvePreset(strconv.Itoa(n), "vp9", false)
+		if err != nil || got != strconv.Itoa(n) {
+			t.Fatalf("vp9 numeric %d: %q %v", n, got, err)
+		}
+		gotQSV, err := ResolvePreset(strconv.Itoa(n), "vp9", true)
+		wantQSV := []string{"veryslow", "veryslow", "veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast"}[n]
+		if err != nil || gotQSV != wantQSV {
+			t.Fatalf("vp9 qsv numeric %d: %q %v", n, gotQSV, err)
+		}
+	}
+	for _, bad := range []string{"-1", "9", "13", "14", "bogus"} {
+		if _, err := ResolvePreset(bad, "vp9", false); err == nil {
+			t.Fatalf("vp9 accepted %q", bad)
+		}
+		if _, err := ResolvePreset(bad, "vp9", true); err == nil {
+			t.Fatalf("vp9 qsv accepted %q", bad)
+		}
+	}
+	for _, codec := range []string{"prores", "ffv1", "theora"} {
+		for _, speed := range []string{"", "8", "fast", "anything"} {
+			if got, err := ResolvePreset(speed, codec, false); err != nil || got != "" {
+				t.Fatalf("%s speed %q: got %q err %v", codec, speed, got, err)
+			}
+		}
+	}
+}
+
+func TestValidV4Settings(t *testing.T) {
+	valid := []Settings{
+		{Codec: "vp9", Container: "webm", Preset: "fast", Quality: "balanced", AudioCodec: "opus", AudioKbps: 128, HW: "qsv"},
+		{Codec: "vp9", Container: "mp4", Preset: "4", Quality: "", CRF: number(0), AudioCodec: "aac", AudioKbps: 128, HW: "off"},
+		{Codec: "vp9", Container: "mkv", Preset: "8", Quality: "", CRF: number(63), AudioCodec: "flac", AudioKbps: 0, HW: "auto"},
+		{Codec: "prores", Container: "mov", Preset: "", Quality: "high", AudioCodec: "aac", AudioKbps: 192, HW: "vulkan"},
+		{Codec: "prores", Container: "qt"[:0] + "mov", Preset: "8", Quality: "small", AudioCodec: "ac3", AudioKbps: 192, HW: "off"},
+		{Codec: "ffv1", Container: "mkv", Preset: "", Quality: "", AudioCodec: "flac", AudioKbps: 0, HW: "vulkan"},
+		{Codec: "ffv1", Container: "nut", Preset: "fast", Quality: "balanced", AudioCodec: "mp3", AudioKbps: 128, HW: "auto"},
+		{Codec: "theora", Container: "ogg", Preset: "", Quality: "balanced", AudioCodec: "opus", AudioKbps: 128, HW: "off"},
+		{Codec: "h264", Container: "ts", Preset: "slow", Quality: "balanced", AudioCodec: "mp3", AudioKbps: 128, HW: "auto"},
+		{Codec: "hevc", Container: "avi", Preset: "medium", Quality: "balanced", AudioCodec: "ac3", AudioKbps: 192, HW: "auto"},
+	}
+	for i, s := range valid {
+		if err := Validate(s); err != nil {
+			t.Fatalf("case %d (%+v) failed: %v", i, s, err)
 		}
 	}
 }

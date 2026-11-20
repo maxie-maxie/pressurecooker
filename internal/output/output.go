@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/maxie-maxie/pressurecooker/internal/config"
@@ -13,12 +14,6 @@ import (
 
 type Destination struct {
 	Path, Dir, Container string
-}
-
-var containerByExt = map[string]string{
-	".mp4":  "mp4",
-	".mkv":  "mkv",
-	".webm": "webm",
 }
 
 // Resolve picks the final output path and container without creating directories.
@@ -42,28 +37,32 @@ func Resolve(source, destination string, settings config.Settings, mode string, 
 	ext := strings.ToLower(filepath.Ext(destFull))
 	extContainer := ""
 	if !isDir {
-		extContainer = containerByExt[ext]
+		extContainer = config.ContainerForExt(ext)
 	}
 
 	reqContainer := strings.ToLower(strings.TrimSpace(settings.Container))
 	if reqContainer != "" {
-		if reqContainer != "mp4" && reqContainer != "mkv" && reqContainer != "webm" {
-			return Destination{}, fmt.Errorf("container must be mp4, mkv or webm; got %q", settings.Container)
+		if !slices.Contains(config.Containers, reqContainer) {
+			return Destination{}, fmt.Errorf("container must be one of %s; got %q", strings.Join(config.Containers, ", "), settings.Container)
 		}
 		if extContainer != "" && extContainer != reqContainer {
 			return Destination{}, fmt.Errorf("destination extension %q conflicts with container %s", ext, reqContainer)
 		}
 	}
 
+	codec := strings.ToLower(strings.TrimSpace(settings.Codec))
 	container := reqContainer
 	if container == "" {
 		container = extContainer
 	}
 	if container == "" {
+		container = config.Recommended(codec)
+	}
+	if container == "" {
 		container = "mp4"
 	}
-	if container == "webm" && settings.Codec != "" && strings.ToLower(strings.TrimSpace(settings.Codec)) != "av1" {
-		return Destination{}, fmt.Errorf("container webm requires codec av1; got %s", settings.Codec)
+	if codec != "" && !config.Accepts(container, codec, "") {
+		return Destination{}, fmt.Errorf("%s does not accept %s", container, codec)
 	}
 
 	var outPath, outDir string
@@ -101,8 +100,7 @@ func looksLikeDir(raw, absPath string) bool {
 	if info, err := os.Stat(absPath); err == nil && info.IsDir() {
 		return true
 	}
-	_, recognized := containerByExt[strings.ToLower(filepath.Ext(absPath))]
-	return !recognized
+	return config.ContainerForExt(filepath.Ext(absPath)) == ""
 }
 
 func autoName(stem, container string, settings config.Settings, mode string, targetBytes int64) (string, error) {
