@@ -55,27 +55,39 @@ type Request struct {
 }
 
 var softwareEncoders = map[string]string{
-	"h264": "libx264",
-	"hevc": "libx265",
-	"av1":  "libsvtav1",
+	"h264":   "libx264",
+	"hevc":   "libx265",
+	"av1":    "libsvtav1",
+	"vp9":    "libvpx-vp9",
+	"prores": "prores_ks",
+	"ffv1":   "ffv1",
+	"theora": "libtheora",
 }
 
 var vulkanEncoders = map[string]string{
-	"h264": "h264_vulkan",
-	"hevc": "hevc_vulkan",
-	"av1":  "av1_vulkan",
+	"h264":   "h264_vulkan",
+	"hevc":   "hevc_vulkan",
+	"av1":    "av1_vulkan",
+	"prores": "prores_ks_vulkan",
+	"ffv1":   "ffv1_vulkan",
 }
 
 var qsvEncoders = map[string]string{
 	"h264": "h264_qsv",
 	"hevc": "hevc_qsv",
 	"av1":  "av1_qsv",
+	"vp9":  "vp9_qsv",
 }
 
 var muxerByContainer = map[string]string{
 	"mp4":  "mp4",
 	"mkv":  "matroska",
 	"webm": "webm",
+	"mov":  "mov",
+	"avi":  "avi",
+	"ogg":  "ogg",
+	"ts":   "mpegts",
+	"nut":  "nut",
 }
 
 // QualityQuantizer returns the CRF, Vulkan CQP, or QSV ICQ value for a quality level and encoder.
@@ -84,14 +96,17 @@ func QualityQuantizer(level, encoderName string) (float64, error) {
 	if lvl == "" {
 		lvl = "balanced"
 	}
-	var hevcVal, h264Val, av1Val float64
+	var hevcVal, h264Val, av1Val, vp9Val, proresVal, theoraVal float64
 	switch lvl {
 	case "high":
 		hevcVal, h264Val, av1Val = 26, 21, 30
+		vp9Val, proresVal, theoraVal = 24, 3, 8
 	case "balanced":
 		hevcVal, h264Val, av1Val = 32, 27, 38
+		vp9Val, proresVal, theoraVal = 32, 2, 6
 	case "small":
 		hevcVal, h264Val, av1Val = 36, 31, 46
+		vp9Val, proresVal, theoraVal = 40, 1, 4
 	default:
 		return 0, fmt.Errorf("quality must be high, balanced or small; got %q", level)
 	}
@@ -102,6 +117,12 @@ func QualityQuantizer(level, encoderName string) (float64, error) {
 		return h264Val, nil
 	case "libsvtav1":
 		return av1Val, nil
+	case "libvpx-vp9", "vp9_qsv":
+		return vp9Val, nil
+	case "prores_ks", "prores_ks_vulkan":
+		return proresVal, nil
+	case "libtheora":
+		return theoraVal, nil
 	default:
 		return 0, fmt.Errorf("unsupported encoder %q for quality mapping", encoderName)
 	}

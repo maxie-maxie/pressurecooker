@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/maxie-maxie/pressurecooker/internal/config"
 )
 
 // Probe inspects duration, video, audio, container, and file size using ffprobe.
@@ -258,6 +260,9 @@ func parseFrameRate(v any) float64 {
 func normalizeContainer(formatName, path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	lower := strings.ToLower(strings.TrimSpace(formatName))
+	if strings.Contains(lower, "mov") && config.ContainerForExt(ext) == "mov" {
+		return "mov"
+	}
 	if strings.Contains(lower, "mp4") {
 		return "mp4"
 	}
@@ -272,7 +277,13 @@ func normalizeContainer(formatName, path string) string {
 	}
 	if lower != "" {
 		first, _, _ := strings.Cut(lower, ",")
+		if strings.TrimSpace(first) == "mpegts" {
+			return "ts"
+		}
 		return strings.TrimSpace(first)
+	}
+	if container := config.ContainerForExt(ext); container != "" {
+		return container
 	}
 	if len(ext) > 1 {
 		return ext[1:]
