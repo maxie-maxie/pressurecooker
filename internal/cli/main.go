@@ -99,13 +99,16 @@ func MainWith(ctx context.Context, args []string, version string, env Env) int {
 		w.Line("pressurecooker " + version)
 		return exitOK
 	}
-	if parsed.NewPreset != nil && !interactive {
-		return failFooter(w, nil, "--new-preset needs a terminal", exitUsage)
+	if parsed.EditPreset != nil && !interactive {
+		return failFooter(w, nil, "--preset needs a terminal", exitUsage)
 	}
 	if parsed.Setup && !interactive {
 		return failFooter(w, nil, "--setup needs a terminal", exitUsage)
 	}
-	if parsed.NewPreset == nil && !parsed.ListPresets {
+	if parsed.EditPreset == nil && !parsed.ListPresets {
+		if err := validateExplicitOptions(parsed); err != nil {
+			return failFooter(w, nil, err.Error(), exitUsage)
+		}
 		provisional := parsed
 		if container := destinationContainer(parsed.Destination); container != "" {
 			if parsed.Origins["container"] == "explicit" && parsed.Settings.Container != container {
@@ -137,21 +140,27 @@ func MainWith(ctx context.Context, args []string, version string, env Env) int {
 		}
 		return exitOK
 	}
-	if parsed.NewPreset != nil {
+	if parsed.EditPreset != nil {
 		p := config.FactoryPreset()
-		p.ID = *parsed.NewPreset
+		p.ID = *parsed.EditPreset
 		for _, existing := range presets {
 			if existing.ID == p.ID {
 				p = existing
 				break
 			}
 		}
-		_, code := recordPreset(ctx, env, w, storage, p, presets)
+		_, code := recordPreset(ctx, env, w, storage, p, presets, parsed.FFmpeg)
 		return code
 	}
 	if presets == nil {
+		if parsed.PresetID != 1 {
+			return failFooter(w, nil, fmt.Sprintf("preset %d not found; see --preset-list", parsed.PresetID), exitUsage)
+		}
+		if _, err := Resolve(parsed, nil, nil); err != nil {
+			return failFooter(w, nil, err.Error(), exitUsage)
+		}
 		if interactive && !parsed.DryRun {
-			p, code := recordPreset(ctx, env, w, storage, config.FactoryPreset(), nil)
+			p, code := recordPreset(ctx, env, w, storage, config.FactoryPreset(), nil, parsed.FFmpeg)
 			if p == nil {
 				return code
 			}
@@ -189,22 +198,31 @@ func MainWith(ctx context.Context, args []string, version string, env Env) int {
 		confirmed, code := session(ctx, env, w, tui.Session{
 			Mode: tui.ModeSetup, Settings: config.Clone(run.Settings), Preset: *active,
 			TargetBytes: run.TargetBytes, Edited: map[string]bool{},
-		}, presets)
+		}, presets, parsed.FFmpeg)
 		if confirmed == nil {
 			return code
 		}
-		run.Settings, run.TargetBytes = config.Clone(confirmed.Settings), confirmed.TargetBytes
+		run.Settings = config.Clone(confirmed.Settings)
+		run.ManualSetup = confirmed.ManualSetup
 		run.Origins = cloneOrigins(run.Origins)
-		for key, edited := range confirmed.Edited {
-			if edited {
-				run.Origins[key] = "explicit"
+		if !confirmed.ManualSetup {
+			run.PresetID = confirmed.Preset.ID
+			for _, key := range originKeys {
+				run.Origins[key] = "preset"
 			}
-		}
-		if confirmed.Edited["crf"] && run.Settings.CRF != nil {
-			run.Settings.Quality, run.Origins["quality"] = "", "factory"
-		}
-		if confirmed.Edited["quality"] && run.Settings.CRF == nil {
-			run.Origins["crf"] = "factory"
+		} else {
+			run.TargetBytes = confirmed.TargetBytes
+			for key, edited := range confirmed.Edited {
+				if edited {
+					run.Origins[key] = "explicit"
+				}
+			}
+			if confirmed.Edited["crf"] && run.Settings.CRF != nil {
+				run.Settings.Quality, run.Origins["quality"] = "", "factory"
+			}
+			if confirmed.Edited["quality"] && run.Settings.CRF == nil {
+				run.Origins["crf"] = "factory"
+			}
 		}
 		run.Mode = ModeConversion
 		if run.TargetBytes != nil {
@@ -227,8 +245,21 @@ func MainWith(ctx context.Context, args []string, version string, env Env) int {
 	return executeRun(ctx, env, w, storage, run, interactive)
 }
 
-func session(ctx context.Context, env Env, w *console.Writer, s tui.Session, presets []config.Preset) (*tui.Session, int) {
-	confirmed, err := env.RunSession(ctx, s, tui.SessionOptions{Presets: presets, In: env.In, Out: env.Out, Terminal: true})
+func session(ctx context.Context, env Env, w *console.Writer, s tui.Session, presets []config.Preset, ffmpegFlag string) (*tui.Session, int) {
+	confirmed, err := env.RunSession(ctx, s, tui.SessionOptions{
+		Presets: presets, In: env.In, Out: env.Out, Terminal: true,
+		HWProbe: func(ctx context.Context, codec string) ffmpeg.HWAvailability {
+			bin, err := env.ResolveTool(ffmpegFlag, "ffmpeg")
+			if err != nil {
+				return nil
+			}
+			available, err := ffmpeg.ProbeHardware(ctx, env.Runner, bin, codec)
+			if err != nil {
+				return nil
+			}
+			return available
+		},
+	})
 	if ctx.Err() != nil || errors.Is(err, tui.ErrInterrupted) || errors.Is(err, context.Canceled) {
 		return nil, failFooter(w, nil, "interrupted", exitInterrupted)
 	}
@@ -242,13 +273,15 @@ func session(ctx context.Context, env Env, w *console.Writer, s tui.Session, pre
 	return confirmed, exitOK
 }
 
-func recordPreset(ctx context.Context, env Env, w *console.Writer, storage config.Store, p config.Preset, presets []config.Preset) (*config.Preset, int) {
-	confirmed, code := session(ctx, env, w, tui.Session{Mode: tui.ModePreset, Preset: p, Settings: p.Settings()}, presets)
+func recordPreset(ctx context.Context, env Env, w *console.Writer, storage config.Store, p config.Preset, presets []config.Preset, ffmpegFlag string) (*config.Preset, int) {
+	confirmed, code := session(ctx, env, w, tui.Session{Mode: tui.ModePreset, Preset: p, Settings: p.Settings()}, presets, ffmpegFlag)
 	if confirmed == nil {
 		return nil, code
 	}
 	preset := confirmed.Preset
-	preset.ID = p.ID
+	if p.ID > 0 {
+		preset.ID = p.ID
+	}
 	saved, err := storage.SavePreset(preset)
 	if err != nil {
 		return nil, failFooter(w, nil, err.Error(), exitUsage)
@@ -263,11 +296,21 @@ func printPreset(w *console.Writer, p config.Preset) {
 	}
 	w.Line(header)
 	quality := p.Quality
+	speed := p.Speed
+	caps := config.CodecCaps(p.Codec)
+	if !caps.Speed {
+		speed = "n/a"
+	}
+	if !caps.Quality {
+		quality = "lossless"
+	}
 	if p.CRF != nil {
 		quality = "crf " + trimFloat(*p.CRF)
 	}
 	audio, fps, res := "source", "source", "source"
-	if p.AudioKbps != nil {
+	if p.AudioCodec == "flac" && p.AudioKbps != nil {
+		audio = "lossless"
+	} else if p.AudioKbps != nil {
 		audio = fmt.Sprintf("%dk", *p.AudioKbps)
 	}
 	if p.FPS != nil {
@@ -276,7 +319,7 @@ func printPreset(w *console.Writer, p config.Preset) {
 	if p.Resolution != "" {
 		res = p.Resolution
 	}
-	w.Line(fmt.Sprintf("   %s %s speed %s %s audio:%s fps:%s res:%s", p.Codec, p.Container, p.Speed, quality, audio, fps, res))
+	w.Line(fmt.Sprintf("   %s %s speed %s %s audio_codec:%s audio:%s fps:%s res:%s", p.Codec, p.Container, speed, quality, p.AudioCodec, audio, fps, res))
 }
 
 func cloneOrigins(in config.Origins) config.Origins {

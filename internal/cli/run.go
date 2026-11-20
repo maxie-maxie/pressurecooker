@@ -20,8 +20,12 @@ import (
 
 const conversionQuestion = "No size given: convert without a size limit? [y/N]"
 
-func forceQuestion(reason string) string {
-	return strings.TrimSuffix(reason, ".") + ". Force-target changes bitrate, resolution, FPS and audio bitrate to fit. Use it? [y/N]"
+func forceQuestion(reason string, dirDest bool) string {
+	fields := "codec, encoder, bitrate, resolution, FPS and audio"
+	if dirDest {
+		fields = "codec, encoder, container, bitrate, resolution, FPS and audio"
+	}
+	return strings.TrimSuffix(reason, ".") + ". Force-target may change " + fields + " to fit. Use it? [y/N]"
 }
 
 func sourceQuestion(m ffmpeg.Media, s config.Settings) (string, bool, bool) {
@@ -43,6 +47,10 @@ func sourceQuestion(m ffmpeg.Media, s config.Settings) (string, bool, bool) {
 
 func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.Store, run Run, interactive bool) int {
 	var diags []console.Diagnostic
+	for _, msg := range run.Warnings {
+		diags = append(diags, console.Diagnostic{Severity: "warning", Message: msg})
+	}
+	dirDest := destinationContainer(run.Destination) == ""
 	ffmpegBin, err := env.ResolveTool(run.FFmpeg, "ffmpeg")
 	if err != nil {
 		return failFooter(w, diags, err.Error(), exitMissingTool)
@@ -55,7 +63,7 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 	if err != nil {
 		return runError(ctx, w, diags, err)
 	}
-	if run.Mode == ModeConversion && (!run.Setup || run.DryRun) {
+	if run.Mode == ModeConversion && (!run.ManualSetup || run.DryRun) {
 		if run.DryRun {
 			diags = append(diags, console.Diagnostic{Severity: "warning", Message: conversionQuestion})
 		} else {
@@ -92,9 +100,16 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 		w.Line("Dry run (no files or configuration written)")
 		w.Line("Mode:         " + string(run.Mode))
 		w.Line("Output:       " + dest.Path)
-		w.Line(fmt.Sprintf("Format:       %s / %s", run.Settings.Container, run.Settings.Codec))
-		w.Line("Speed:        " + run.Settings.Preset)
+		w.Line(fmt.Sprintf("Format:       %s / %s / %s", run.Settings.Container, run.Settings.Codec, run.Settings.AudioCodec))
+		speed := run.Settings.Preset
+		if !config.CodecCaps(run.Settings.Codec).Speed {
+			speed = "n/a"
+		}
+		w.Line("Speed:        " + speed)
 		quality := run.Settings.Quality
+		if !config.CodecCaps(run.Settings.Codec).Quality {
+			quality = "lossless"
+		}
 		if run.Settings.CRF != nil {
 			quality = "crf " + trimFloat(*run.Settings.CRF)
 		}
@@ -102,6 +117,9 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 		audio, fps, res := "source", "source", "source"
 		if !run.Settings.AudioSource {
 			audio = fmt.Sprintf("%dk", run.Settings.AudioKbps)
+			if run.Settings.AudioCodec == "flac" {
+				audio = "flac lossless"
+			}
 		}
 		if run.Settings.FPS != nil {
 			fps = trimFloat(*run.Settings.FPS)
@@ -114,7 +132,7 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 			w.Line(fmt.Sprintf("Target:       %g MB (%d bytes)", float64(*run.TargetBytes)/1e6, *run.TargetBytes))
 			w.Line(fmt.Sprintf("Video:        %d kbps\nAudio budget: %d kbps (copy: %t)", fit.VideoKbps, fit.AudioKbps, fit.AudioCopy))
 			if !fit.Fits && !run.ForceTarget {
-				diags = append(diags, console.Diagnostic{Severity: "warning", Message: forceQuestion(fit.Reason)})
+				diags = append(diags, console.Diagnostic{Severity: "warning", Message: forceQuestion(fit.Reason, dirDest)})
 			}
 		}
 		w.Footer(diags)
@@ -123,7 +141,7 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 	forced := false
 	if run.TargetBytes != nil && !fit.Fits {
 		if !run.ForceTarget {
-			if code := ask(ctx, env.In, w, forceQuestion(fit.Reason), interactive, exitTargetSmall, diags); code != exitOK {
+			if code := ask(ctx, env.In, w, forceQuestion(fit.Reason, dirDest), interactive, exitTargetSmall, diags); code != exitOK {
 				return code
 			}
 		}
@@ -140,7 +158,7 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 	for _, msg := range enc.Warnings {
 		diags = append(diags, console.Diagnostic{Severity: "warning", Message: msg})
 	}
-	if enc.Backend == "vulkan" {
+	if strings.EqualFold(enc.Backend, "vulkan") {
 		decodeOK, reason := ffmpeg.ProbeVulkanDecode(ctx, env.Runner, ffmpegBin, run.Source, enc, run.Settings, media)
 		enc.Decode = decodeOK
 		if !decodeOK && reason != "" {
@@ -170,7 +188,7 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 		}
 		if outcome.Oversize || outcome.Infeasible != "" {
 			if !run.ForceTarget {
-				if code := ask(ctx, env.In, w, forceQuestion(outcome.Infeasible), interactive, exitTargetSmall, diags); code != exitOK {
+				if code := ask(ctx, env.In, w, forceQuestion(outcome.Infeasible, dirDest), interactive, exitTargetSmall, diags); code != exitOK {
 					return code
 				}
 			}
@@ -178,6 +196,9 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 		}
 	}
 	if forced {
+		if req.Settings.Quality == "" {
+			req.Settings.Quality = "balanced"
+		}
 		metric := "xpsnr"
 		if run.VMAF {
 			metric = "vmaf"
@@ -192,8 +213,20 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 		if outcome.Oversize || outcome.Infeasible != "" {
 			return failFooter(w, diags, outcome.Infeasible, exitTargetSmall)
 		}
-		if enc.Hardware && outcome.Settings.HW == "off" {
-			enc.Name, enc.Backend, enc.Hardware = softwareEncoderName(run.Settings.Codec), "software", false
+		if outcome.Settings.Container != dest.Container {
+			dest, err = output.Resolve(run.Source, run.Destination, outcome.Settings, string(run.Mode), *run.TargetBytes, run.Overwrite)
+			if err != nil {
+				return failFooter(w, diags, err.Error(), exitUsage)
+			}
+		}
+		selection = config.Clone(outcome.Settings)
+		selection.CRF, selection.Quality = nil, "balanced"
+		if selection.HW != "vulkan" && selection.HW != "qsv" {
+			selection.HW = "off"
+		}
+		enc, err = ffmpeg.ChooseEncoder(ctx, env.Runner, ffmpegBin, selection)
+		if err != nil {
+			return runError(ctx, w, diags, err)
 		}
 	}
 	info, err := os.Stat(part)
@@ -212,14 +245,18 @@ func executeRun(ctx context.Context, env Env, w *console.Writer, storage config.
 	if err := output.Publish(part, dest, run.Source, run.Overwrite); err != nil {
 		return failFooter(w, diags, err.Error(), publishExitCode(err))
 	}
-	if !forced {
-		if err := env.SaveLatest(storage, run.Settings); err != nil {
-			diags = append(diags, console.Diagnostic{Severity: "warning", Message: fmt.Sprintf("could not save latest settings: %v", err)})
-		}
-	}
 	published, err := ffmpeg.Probe(ctx, env.Runner, ffprobeBin, dest.Path)
 	if err != nil {
 		return runError(ctx, w, diags, err)
+	}
+	if ctx.Err() != nil {
+		return runError(ctx, w, diags, ctx.Err())
+	}
+	if !media.HasAudio {
+		outcome.Settings.AudioKbps, outcome.Settings.AudioSource = run.Settings.AudioKbps, run.Settings.AudioSource
+	}
+	if err := env.SaveLatest(storage, outcome.Settings); err != nil {
+		diags = append(diags, console.Diagnostic{Severity: "warning", Message: fmt.Sprintf("could not save latest settings: %v", err)})
 	}
 	rateMode, targetFit := "quality", "none"
 	if run.TargetBytes != nil {
@@ -361,6 +398,9 @@ func buildResult(
 }
 
 func qualityLabel(settings config.Settings, enc ffmpeg.Encoder, rateMode string) string {
+	if !config.CodecCaps(settings.Codec).Quality {
+		return "lossless"
+	}
 	if rateMode == "abr" {
 		if enc.Hardware {
 			return "hardware abr"
@@ -374,13 +414,20 @@ func qualityLabel(settings config.Settings, enc ffmpeg.Encoder, rateMode string)
 	if lvl == "" {
 		lvl = "balanced"
 	}
+	if settings.Codec == "prores" {
+		profile := map[string]string{"high": "hq", "balanced": "standard", "small": "lt"}[lvl]
+		return fmt.Sprintf("%s (%s)", lvl, profile)
+	}
 	q := enc.Quantizer
 	if q == 0 {
 		if mapped, err := ffmpeg.QualityQuantizer(lvl, enc.Name); err == nil {
 			q = mapped
 		}
 	}
-	switch enc.Backend {
+	if settings.Codec == "theora" {
+		return fmt.Sprintf("%s (q:v %s)", lvl, trimFloat(q))
+	}
+	switch strings.ToLower(enc.Backend) {
 	case "vulkan":
 		return fmt.Sprintf("%s (cqp %s)", lvl, trimFloat(q))
 	case "qsv":
@@ -396,9 +443,18 @@ func softwareEncoderName(codec string) string {
 		return "libx264"
 	case "av1":
 		return "libsvtav1"
-	default:
+	case "hevc":
 		return "libx265"
+	case "vp9":
+		return "libvpx-vp9"
+	case "prores":
+		return "prores_ks"
+	case "ffv1":
+		return "ffv1"
+	case "theora":
+		return "libtheora"
 	}
+	return ""
 }
 
 func publishExitCode(err error) int {
