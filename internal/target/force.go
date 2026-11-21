@@ -283,7 +283,7 @@ func emitFieldSummary(onEvent func(console.Event), req ffmpeg.Request) {
 	if onEvent == nil {
 		return
 	}
-	fixed := []string{"preset"}
+	fixed := []string{"enc-speed"}
 	var adjustable []string
 	for _, field := range []string{"codec", "container"} {
 		if isExplicit(req.Origins, field) {
