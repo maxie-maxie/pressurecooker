@@ -173,16 +173,16 @@ func Parse(args []string) (Run, error) {
 		return run, nil
 	}
 	if len(positional) > 3 {
-		return Run{}, fmt.Errorf("expected <in> <out> [size]")
+		return Run{}, fmt.Errorf("expected <input source> <output file/path> [size]")
 	}
 	if len(positional) == 1 || (len(positional) == 2 && bareNumber.MatchString(positional[1])) {
-		return Run{}, fmt.Errorf("missing <destination>")
+		return Run{}, fmt.Errorf("missing <output file/path>")
 	}
 	if len(positional) < 2 {
 		if run.Setup {
-			return Run{}, fmt.Errorf("--setup requires <in> <out>")
+			return Run{}, fmt.Errorf("--setup requires <input source> <output file/path>")
 		}
-		return Run{}, fmt.Errorf("missing <source-video> and <destination>")
+		return Run{}, fmt.Errorf("missing <input source> and <output file/path>")
 	}
 	if strings.TrimSpace(positional[0]) == "" || strings.TrimSpace(positional[1]) == "" {
 		return Run{}, fmt.Errorf("source-video and destination cannot be empty")

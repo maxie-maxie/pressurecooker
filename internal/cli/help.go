@@ -1,13 +1,13 @@
 package cli
 
-const Usage = "pressurecooker <in> <out> [size] [options]"
+const Usage = "pressurecooker <input source> <output file/path> [size] [options]"
 
 const Help = `Usage:
-  pressurecooker <in> <out> <size> [options]
-  pressurecooker <in> <out> -t <size> [options]
-  pressurecooker <in> <out> [options]
-  pressurecooker <in> <out> [size] -p N [options]
-  pressurecooker <in> <out> [size] --setup [options]
+  pressurecooker <input source> <output file/path> <size> [options]
+  pressurecooker <input source> <output file/path> -t <size> [options]
+  pressurecooker <input source> <output file/path> [options]
+  pressurecooker <input source> <output file/path> [size] -p N [options]
+  pressurecooker <input source> <output file/path> [size] --setup [options]
   pressurecooker -p | --preset
   pressurecooker -p N | --preset N
   pressurecooker --preset-list
@@ -51,7 +51,7 @@ const Details = `Modes and prompts:
 Default: a positional size or -t/--target selects a bitrate encode to that size.
 Conversion: omit the size to use the resolved quality or CRF without a size limit.
   No size given: convert without a size limit? [y/N]
-Setup: --setup requires <in> <out> and a terminal, checks paths before opening the TUI.
+Setup: --setup requires <input source> <output file/path> and a terminal, checks paths before opening the TUI.
 Choose a saved preset to run in one click, with no review and the CLI size preserved.
 Without a size, the conversion prompt applies to a one-click preset.
 Setup manually starts from Preset 1 and opens all supported controls and one review.
@@ -80,8 +80,8 @@ balanced (CRF 38), opus when re-encoding, source audio and FPS, 1080p maximum.
 -p/--preset N with paths selects a saved slot, default 1. --preset-list lists them.
 -p without paths opens the editor picker, with saved slots and New preset.
 -p N without paths edits slot N, creating it if missing; confirmation alone saves.
-N is a bare integer >=1. Put size before -p: in out 25 -p 2 means 25 MB with preset 2;
-in out -p 25 means preset 25 without a size. Encoder speed uses -e/--enc-speed.
+N is a bare integer >=1. Put size before -p: <input source> <output file/path> 25 -p 2 means 25 MB with preset 2;
+<input source> <output file/path> -p 25 means preset 25 without a size. Encoder speed uses -e/--enc-speed.
 The editor and --preset-list cannot be combined with paths or processing flags.
 First terminal processing use records preset 1 after checking paths.
 Non-terminal first use and dry-run use the factory preset without saving.

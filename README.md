@@ -37,9 +37,9 @@ The legacy Python package on PyPI (`pressurecooker-video`) is no longer updated.
 ## Usage
 
 ```text
-pressurecooker <source-video> <destination> [target-size-mb] [options]
-pressurecooker <source-video> <destination> [target-size-mb] -p N [options]
-pressurecooker <source-video> <destination> [target-size-mb] --setup [options]
+pressurecooker <input source> <output file/path> [target-size-mb] [options]
+pressurecooker <input source> <output file/path> [target-size-mb] -p N [options]
+pressurecooker <input source> <output file/path> [target-size-mb] --setup [options]
 pressurecooker -p | --preset
 pressurecooker -p N | --preset N
 pressurecooker --preset-list
@@ -100,7 +100,7 @@ Pressurecooker runs in three modes. A size chooses between Default and Conversio
 
 **Conversion** (no size given): encodes with the resolved `--quality` or `--crf`. Before encoding it asks `No size given: convert without a size limit? [y/N]`.
 
-**Setup** (`--setup`, needs `<in> <out>`): checks paths first, then opens the alt-screen Setup TUI (bottom bar, label/description/fields, Esc cancels cleanly), then runs Default or Conversion with the confirmed values. See [Presets and `--setup`](#presets-and---setup).
+**Setup** (`--setup`, needs `<input source> <output file/path>`): checks paths first, then opens the alt-screen Setup TUI (bottom bar, label/description/fields, Esc cancels cleanly), then runs Default or Conversion with the confirmed values. See [Presets and `--setup`](#presets-and---setup).
 
 ## Presets and `--setup`
 
