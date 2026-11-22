@@ -1,7 +1,10 @@
 # pressurecooker
 
-Compresses and converts video through an external FFmpeg installation. Target sizes are decimal megabytes (`1 MB = 1,000,000 bytes`).
+Never have to pay for video upload limits again, pressurecook videos to your preferred size, using FFmpeg.
 
+Uses Vulkan for GPU Detection, supports NVIDIA NVENC, AMD VCE, Intel QuickSync. Through a simple command-line interface, pressurecooker calculates a video and audio bitrate budget from the source duration. It reports the finished size and warns when the output exceeds the target. Encoder rate control and container overhead can cause the result to differ from the requested size.
+
+hainan chicken
 ## Requirements
 
 - FFmpeg and ffprobe, installed separately and on `PATH`, or passed with `--ffmpeg` and `--ffprobe`.
