@@ -36,7 +36,7 @@ func TestRealCLI(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	build := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w -X main.version=4.0.0", "-o", binary, "./cmd/pressurecooker")
+	build := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w -X main.version=1.3.0", "-o", binary, "./cmd/pressurecooker")
 	build.Dir = filepath.Join("..", "..")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -51,7 +51,7 @@ func TestRealCLI(t *testing.T) {
 			if out == "" {
 				t.Fatalf("no output for %v", args)
 			}
-			if args[0] == "--version" && strings.TrimSpace(out) != "pressurecooker 4.0.0" {
+			if args[0] == "--version" && strings.TrimSpace(out) != "pressurecooker 1.3.0" {
 				t.Fatal(out)
 			}
 			assertEmptyDir(t, filepath.Dir(store.Dir))
@@ -541,7 +541,7 @@ func runInteractive(t *testing.T, store config.Store, args []string, answer stri
 	var out bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	code := cli.MainWith(ctx, args, "4.0.0", cli.Env{
+	code := cli.MainWith(ctx, args, "1.3.0", cli.Env{
 		In: strings.NewReader(answer), Out: &out, IsTerminalIn: &terminal, IsTerminalOut: &terminal,
 		Store: func() (config.Store, error) { return store, nil }, Runner: ffmpeg.ExecRunner{},
 	})

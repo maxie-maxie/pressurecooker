@@ -194,7 +194,7 @@ Default metric is XPSNR, falling back to SSIM when XPSNR is missing. `--vmaf` ra
 
 ## Changed and removed flags
 
-In v4, `-e`/`--enc-speed` sets the encoder speed. `-p`/`--preset` now selects a preset, so an old `-p fast` exits `2` with `preset number must be an integer; encoder speed is -e/--enc-speed`.
+In v1.3.0, `-e`/`--enc-speed` sets the encoder speed. `-p`/`--preset` now selects a preset, so an old `-p fast` exits `2` with `preset number must be an integer; encoder speed is -e/--enc-speed`.
 
 | Old flag | Replacement |
 | --- | --- |
