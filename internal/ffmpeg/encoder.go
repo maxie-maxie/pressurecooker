@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,11 +31,15 @@ type vulkanDevice struct {
 
 // ChooseEncoder selects a software or hardware encoder, running GPU probes only when permitted.
 func ChooseEncoder(ctx context.Context, r Runner, ffmpegBin string, s config.Settings) (Encoder, error) {
+	if err := ctx.Err(); err != nil {
+		return Encoder{}, err
+	}
 	codec := strings.ToLower(strings.TrimSpace(s.Codec))
 	swName, ok := softwareEncoders[codec]
 	if !ok {
-		return Encoder{}, fmt.Errorf("codec must be h264, hevc or av1; got %q", s.Codec)
+		return Encoder{}, fmt.Errorf("unsupported video codec %q", s.Codec)
 	}
+	caps := config.CodecCaps(codec)
 	hw := strings.ToLower(strings.TrimSpace(s.HW))
 	if hw == "" {
 		hw = "auto"
@@ -42,18 +47,25 @@ func ChooseEncoder(ctx context.Context, r Runner, ffmpegBin string, s config.Set
 	if hw != "auto" && hw != "vulkan" && hw != "qsv" && hw != "off" {
 		return Encoder{}, fmt.Errorf("hw must be auto, vulkan, qsv or off; got %q", s.HW)
 	}
+	if (hw == "vulkan" || hw == "qsv") && !slices.Contains(caps.HW, hw) {
+		return Encoder{}, fmt.Errorf("%s does not support %s hardware encoding", codec, hw)
+	}
 	qualityLevel := strings.ToLower(strings.TrimSpace(s.Quality))
 	if qualityLevel == "" {
 		qualityLevel = "balanced"
 	}
-	if qualityLevel != "high" && qualityLevel != "balanced" && qualityLevel != "small" {
+	if caps.Quality && qualityLevel != "high" && qualityLevel != "balanced" && qualityLevel != "small" {
 		return Encoder{}, fmt.Errorf("quality must be high, balanced or small; got %q", s.Quality)
 	}
 
 	// Validate preset before any hardware probe runs.
-	swPreset, err := config.ResolvePreset(s.Preset, codec, false)
-	if err != nil {
-		return Encoder{}, err
+	var swPreset string
+	var err error
+	if caps.Speed {
+		swPreset, err = config.ResolvePreset(s.Preset, codec, false)
+		if err != nil {
+			return Encoder{}, err
+		}
 	}
 
 	if s.CRF != nil {
@@ -73,11 +85,14 @@ func ChooseEncoder(ctx context.Context, r Runner, ffmpegBin string, s config.Set
 		}, nil
 	}
 
-	swQuantizer, err := QualityQuantizer(qualityLevel, swName)
-	if err != nil {
-		return Encoder{}, err
+	var swQuantizer float64
+	if caps.Quality {
+		swQuantizer, err = QualityQuantizer(qualityLevel, swName)
+		if err != nil {
+			return Encoder{}, err
+		}
 	}
-	if hw == "off" {
+	if hw == "off" || len(caps.HW) == 0 {
 		return Encoder{
 			Name:      swName,
 			Backend:   "software",
@@ -94,15 +109,21 @@ func ChooseEncoder(ctx context.Context, r Runner, ffmpegBin string, s config.Set
 		ffmpegBin = "ffmpeg"
 	}
 
-	if hw == "auto" || hw == "vulkan" {
+	if hw == "vulkan" || hw == "auto" && slices.Contains(caps.HW, "vulkan") {
 		vkName := vulkanEncoders[codec]
-		vkQuality, err := ResolveVulkanQuality(s.Preset, codec)
-		if err != nil {
-			return Encoder{}, err
+		var vkQuality int
+		if caps.Speed {
+			vkQuality, err = ResolveVulkanQuality(s.Preset, codec)
+			if err != nil {
+				return Encoder{}, err
+			}
 		}
-		vkQP, err := QualityQuantizer(qualityLevel, vkName)
-		if err != nil {
-			return Encoder{}, err
+		var vkQP float64
+		if caps.Quality {
+			vkQP, err = QualityQuantizer(qualityLevel, vkName)
+			if err != nil {
+				return Encoder{}, err
+			}
 		}
 		enc, reason, probeErr := probeVulkan(ctx, r, ffmpegBin, vkName, vkQuality, vkQP)
 		if probeErr != nil {
@@ -125,7 +146,6 @@ func ChooseEncoder(ctx context.Context, r Runner, ffmpegBin string, s config.Set
 		}, nil
 	}
 
-	// Explicit hw == "qsv": probe fails with an error rather than falling back.
 	qsvName := qsvEncoders[codec]
 	qsvPreset, err := config.ResolvePreset(s.Preset, codec, true)
 	if err != nil {
@@ -148,17 +168,22 @@ func ChooseEncoder(ctx context.Context, r Runner, ffmpegBin string, s config.Set
 			Quantizer: qsvICQ,
 		}, nil
 	}
-	if reason != "" {
-		return Encoder{}, fmt.Errorf("QSV requested but %s probe failed: %s", qsvName, reason)
+	if reason == "" {
+		reason = "probe failed"
 	}
-	return Encoder{}, fmt.Errorf("QSV requested but %s probe failed", qsvName)
+	if hw == "auto" {
+		return Encoder{Name: swName, Backend: "software", Preset: swPreset, Quantizer: swQuantizer,
+			Warnings: []string{fmt.Sprintf("QSV encode unavailable: %s; using %s", reason, swName)}}, nil
+	}
+	return Encoder{}, fmt.Errorf("QSV requested but %s probe failed: %s", qsvName, reason)
 }
 
 func validateCRF(v float64, codec string) error {
-	lo, hi := 0.0, 51.0
-	if codec == "av1" {
-		lo, hi = 1, 63
+	caps := config.CodecCaps(codec)
+	if caps.CRFHi == 0 {
+		return fmt.Errorf("crf is unsupported for %s", codec)
 	}
+	lo, hi := caps.CRFLo, caps.CRFHi
 	if math.IsNaN(v) || math.IsInf(v, 0) || v < lo || v > hi {
 		return fmt.Errorf("crf for %s must be a finite number from %.0f to %.0f", codec, lo, hi)
 	}
@@ -256,10 +281,11 @@ func probeVulkanEncoder(ctx context.Context, r Runner, ffmpegBin, name string, d
 		ffmpegBin, "-nostdin", "-hide_banner", "-loglevel", "verbose",
 		"-init_hw_device", fmt.Sprintf("vulkan=pc:%d", device), "-filter_hw_device", "pc",
 		"-f", "lavfi", "-i", "color=c=black:s=1280x720:r=30:d=0.3",
-		"-vf", "format=nv12,hwupload",
-		"-c:v", name, "-quality", strconv.Itoa(quality), "-rc_mode", "cqp", "-qp", formatFloat(qp),
-		"-an", "-f", "null", os.DevNull,
+		"-vf", vulkanFilter(nil, false, vulkanPixelFormat(name)),
+		"-c:v", name,
 	}
+	cmd = append(cmd, vulkanCodecArgs(name, quality, qp, "quality", 0)...)
+	cmd = append(cmd, "-an", "-f", "null", os.DevNull)
 	return runHardwareProbe(ctx, r, cmd)
 }
 
@@ -301,10 +327,11 @@ func ProbeVulkanDecode(ctx context.Context, r Runner, ffmpegBin, source string, 
 		"-init_hw_device", fmt.Sprintf("vulkan=pc:%d", enc.Device), "-filter_hw_device", "pc",
 		"-hwaccel", "vulkan", "-hwaccel_device", "pc", "-hwaccel_output_format", "vulkan",
 		"-i", source, "-map", "0:v:0",
-		"-vf", vulkanFilter(filters, true),
-		"-c:v", enc.Name, "-quality", strconv.Itoa(enc.Quality), "-rc_mode", "cqp", "-qp", formatFloat(qp),
-		"-frames:v", "8", "-an", "-f", "null", os.DevNull,
+		"-vf", vulkanFilter(filters, true, vulkanPixelFormat(enc.Name)),
+		"-c:v", enc.Name,
 	}
+	cmd = append(cmd, vulkanCodecArgs(enc.Name, enc.Quality, qp, "quality", 0)...)
+	cmd = append(cmd, "-frames:v", "8", "-an", "-f", "null", os.DevNull)
 	ok, stderr, runErr := runHardwareProbe(ctx, r, cmd)
 	if runErr != nil {
 		return false, runErr.Error()
@@ -316,16 +343,18 @@ func ProbeVulkanDecode(ctx context.Context, r Runner, ffmpegBin, source string, 
 }
 
 func runHardwareProbe(ctx context.Context, r Runner, cmd []string) (bool, string, error) {
+	if err := ctx.Err(); err != nil {
+		return false, "", err
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, hardwareProbeTimeout)
 	defer cancel()
 
 	res, err := r.Run(probeCtx, cmd, nil)
 	stderr := strings.Join(res.StderrTail, "\n")
+	if ctx.Err() != nil {
+		return false, stderr, ctx.Err()
+	}
 	if err != nil {
-		if ctx.Err() != nil {
-			// Caller cancelled the whole run; do not swallow user interrupts as probe fallbacks.
-			return false, stderr, ctx.Err()
-		}
 		if errors.Is(err, context.DeadlineExceeded) || probeCtx.Err() == context.DeadlineExceeded {
 			return false, "probe timed out", nil
 		}

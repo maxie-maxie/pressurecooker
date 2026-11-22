@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/maxie-maxie/pressurecooker/internal/config"
+	"github.com/maxie-maxie/pressurecooker/internal/console"
+	"github.com/maxie-maxie/pressurecooker/internal/tui"
 )
 
 func number(n float64) *float64 { return &n }
@@ -29,7 +31,7 @@ func TestSyntaxAndWholeFlags(t *testing.T) {
 		{[]string{"in", "out"}, ModeConversion, false, 0},
 		{[]string{"in", "out", "--setup"}, ModeConversion, true, 0},
 		{[]string{"in", "out", "5", "--setup", "--latest"}, ModeDefault, true, 5000000},
-		{[]string{"-PS=2", "in", "out", "5", "-FT", "--VMAF", "-FF=f", "-FP", "p"}, ModeDefault, false, 5000000},
+		{[]string{"-P=2", "in", "out", "5", "-FT", "--VMAF", "-FF=f", "-FP", "p"}, ModeDefault, false, 5000000},
 		{[]string{"--", "--help", "-ft", "2"}, ModeDefault, false, 2000000},
 	} {
 		run, err := Parse(tc.args)
@@ -40,9 +42,9 @@ func TestSyntaxAndWholeFlags(t *testing.T) {
 			t.Fatalf("size: %+v", run)
 		}
 	}
-	for _, args := range [][]string{{"--new-preset"}, {"--new-preset", "2"}, {"--NEW-PRESET=3"}, {"--preset-list"}} {
+	for _, args := range [][]string{{"--preset"}, {"--preset", "2"}, {"--PRESET=3"}, {"--preset-list"}} {
 		run, err := Parse(args)
-		if err != nil || run.NewPreset == nil && !run.ListPresets {
+		if err != nil || run.EditPreset == nil && !run.ListPresets {
 			t.Fatalf("%v: %+v %v", args, run, err)
 		}
 	}
@@ -52,13 +54,13 @@ func TestErrorsBeforeConfigOrTools(t *testing.T) {
 	cases := [][]string{
 		{}, {"--setup"}, {"--setup", "in"}, {"in"}, {"in", "20"},
 		{"in", "out", "3", "-t", "4"}, {"in", "out", "3", "--crf", "38"}, {"in", "out", "-t", "3", "-l", "high"},
-		{"in", "out", "-ft"}, {"in", "out", "--vmaf"}, {"in", "out", "--latest", "-ps", "1"},
-		{"in", "out", "--crf", "38", "-l", "high"}, {"--new-preset", "in", "out"}, {"--preset-list", "in", "out"},
-		{"--new-preset", "--setup"}, {"--preset-list", "--dry-run"}, {"--new-preset", "--preset-list"},
-		{"--new-preset", "0"}, {"--new-preset=-1"}, {"in", "out", "-ps", "0"},
+		{"in", "out", "-ft"}, {"in", "out", "--vmaf"}, {"in", "out", "--latest", "-p", "1"},
+		{"in", "out", "--crf", "38", "-l", "high"}, {"--preset", "in", "out"}, {"--preset-list", "in", "out"},
+		{"--preset", "--setup"}, {"--preset-list", "--dry-run"}, {"--preset", "--preset-list"},
+		{"--preset", "0"}, {"--preset=-1"}, {"in", "out", "-p", "0"},
 		{"in", "out", "--force"}, {"in", "out", "-v"}, {"in", "out", "--verbose"}, {"in", "out", "-co"},
 		{"in", "out", "--conversion"}, {"--defaults"}, {"in", "out", "--setup=true"},
-		{"in", "out", "--latest=false"}, {"in", "out", "--new-preset", "--fps", "30"},
+		{"in", "out", "--latest=false"}, {"in", "out", "--preset", "--fps", "30"},
 	}
 	for _, args := range cases {
 		var out bytes.Buffer
@@ -145,19 +147,19 @@ func TestTargetByteBounds(t *testing.T) {
 }
 
 func TestValueValidation(t *testing.T) {
-	for _, pair := range [][2]string{{"-c", "vp9"}, {"-f", "avi"}, {"-p", "14"}, {"-l", "best"}, {"-a", "0"}, {"-a", "1.5"}, {"-a", "99999999999999999999"}, {"-r", "NaN"}, {"-r", "1001"}, {"-r", "0"}, {"-r", "0x1p2"}, {"-s", "641x360"}, {"-q", "cuda"}, {"--crf", "Inf"}, {"--crf", "64"}, {"--crf", "0x1p2"}} {
+	for _, pair := range [][2]string{{"-c", "bad"}, {"-f", "bad"}, {"-ac", "bad"}, {"-e", "14"}, {"-l", "best"}, {"-a", "0"}, {"-a", "1.5"}, {"-a", "99999999999999999999"}, {"-r", "NaN"}, {"-r", "1001"}, {"-r", "0"}, {"-r", "0x1p2"}, {"-s", "641x360"}, {"-q", "cuda"}, {"--crf", "Inf"}, {"--crf", "64"}, {"--crf", "0x1p2"}} {
 		if _, err := Parse([]string{"in", "out", pair[0], pair[1]}); err == nil {
 			t.Fatalf("accepted %v", pair)
 		}
 	}
-	for _, flag := range []string{"-t", "-c", "-f", "-p", "-l", "--crf", "-a", "-r", "-s", "-q", "-ps", "-ff", "-fp"} {
+	for _, flag := range []string{"-t", "-c", "-f", "-e", "-ac", "-l", "--crf", "-a", "-r", "-s", "-q", "-ff", "-fp"} {
 		for _, tail := range [][]string{{flag}, {flag + "="}, {flag, "--"}, {flag, "--overwrite"}} {
 			if _, err := Parse(append([]string{"in", "out"}, tail...)); err == nil || !strings.Contains(err.Error(), "requires a value") {
 				t.Fatalf("%v: %v", tail, err)
 			}
 		}
 	}
-	for _, args := range [][]string{{"--crf", "52", "-c", "hevc", "-p", "fast"}, {"--crf", "0"}, {"--crf", "38", "-q", "qsv"}} {
+	for _, args := range [][]string{{"--crf", "52", "-c", "hevc", "-e", "fast"}, {"--crf", "0"}, {"--crf", "38", "-q", "qsv"}} {
 		p, err := Parse(append([]string{"in", "out"}, args...))
 		if err != nil {
 			t.Fatal(err)
@@ -182,7 +184,7 @@ func TestHelpContract(t *testing.T) {
 			t.Fatalf("short help contains %s", banned)
 		}
 	}
-	for _, required := range []string{conversionQuestion, "0.97", "20%", "128/96/64/48", "3 sample encodes", "3 full encodes", "libvmaf", "2.4 times", "720p60", "presets.json", "latest.json", "version 3", "%APPDATA%", "$XDG_CONFIG_HOME", "1 MB = 1,000,000 bytes", "MiB", "libx265 CRF", "libx264 CRF", "libsvtav1 CRF", "130"} {
+	for _, required := range []string{conversionQuestion, "0.97", "20%", "128/96/64/48", "3 sample encodes", "3 full encodes", "libvmaf", "2.4 times", "720p60", "presets.json", "latest.json", "version 4", "%APPDATA%", "$XDG_CONFIG_HOME", "1 MB = 1,000,000 bytes", "MiB", "libx265 CRF", "libx264 CRF", "libsvtav1 CRF", "130"} {
 		if !strings.Contains(Details, required) {
 			t.Fatalf("details lack %s", required)
 		}
@@ -194,7 +196,7 @@ func TestPresetListFormattingAndNoWrites(t *testing.T) {
 	store := config.Store{Dir: dir}
 	var out bytes.Buffer
 	code := mainWith([]string{"--preset-list"}, "test", &out, func() (config.Store, error) { return store, nil })
-	want := "1  Default  AV1, 1080p max, source audio and FPS\n   av1 mp4 speed 8 balanced audio:source fps:source res:1080p\n"
+	want := "1  Default  AV1, 1080p max, source audio and FPS\n   av1 mp4 speed 8 balanced audio_codec:opus audio:source fps:source res:1080p\n"
 	if code != 0 || out.String() != want {
 		t.Fatalf("%d %q", code, out.String())
 	}
@@ -211,7 +213,7 @@ func TestPresetListFormattingAndNoWrites(t *testing.T) {
 	}
 	out.Reset()
 	code = mainWith([]string{"--preset-list"}, "test", &out, func() (config.Store, error) { return store, nil })
-	if code != 0 || out.String() != "2  Small\n   av1 mp4 speed 8 crf 38 audio:96k fps:25 res:source\n" {
+	if code != 0 || out.String() != "2  Small\n   av1 mp4 speed 8 crf 38 audio_codec:opus audio:96k fps:25 res:source\n" {
 		t.Fatalf("%d %s", code, out.String())
 	}
 	if err := os.WriteFile(filepath.Join(dir, "presets.json"), []byte("{broken"), 0600); err != nil {
@@ -229,5 +231,202 @@ func TestFactoryPresetUsedWithoutSavedFiles(t *testing.T) {
 	run, err := Resolve(p, nil, nil)
 	if err != nil || !reflect.DeepEqual(run.Settings, config.FactoryPreset().Settings()) || run.TargetBytes != nil {
 		t.Fatalf("%+v %v", run, err)
+	}
+}
+
+func TestPresetParsingV4(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		id   int
+		size int64
+		edit bool
+	}{
+		{[]string{"-p"}, 0, 0, true},
+		{[]string{"--preset", "2"}, 2, 0, true},
+		{[]string{"-p=3"}, 3, 0, true},
+		{[]string{"in", "out", "25", "-p", "2"}, 2, 25000000, false},
+		{[]string{"in", "out", "-p", "25"}, 25, 0, false},
+		{[]string{"-p", "2", "in", "out", "5", "-e", "fast"}, 2, 5000000, false},
+	} {
+		run, err := Parse(tc.args)
+		if err != nil {
+			t.Fatalf("%v: %v", tc.args, err)
+		}
+		if tc.edit {
+			if run.EditPreset == nil || *run.EditPreset != tc.id || run.Origins["use-preset"] != "" {
+				t.Fatalf("editor: %+v", run)
+			}
+		} else if run.EditPreset != nil || run.PresetID != tc.id || run.Origins["use-preset"] != "explicit" {
+			t.Fatalf("selection: %+v", run)
+		}
+		if tc.size == 0 && run.TargetBytes != nil || tc.size != 0 && (run.TargetBytes == nil || *run.TargetBytes != tc.size) {
+			t.Fatalf("size: %+v", run)
+		}
+	}
+	for _, args := range [][]string{{"-p", "fast"}, {"-p=fast"}, {"in", "out", "-p", "fast"}, {"-p", "1.5"}, {"-p", "0"}, {"-p", "-1"}, {"-p="}, {"-p", "in.mp4", "out.mp4"}, {"-p", "input"}} {
+		_, err := Parse(args)
+		if err == nil || err.Error() != "preset number must be an integer; encoder speed is -e/--enc-speed" {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+}
+
+func TestV4ErrorsBeforeStoreToolsAndTUI(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	src, dst, _, _, _, _ := runFixture(t, true)
+	cases := [][]string{
+		{src, dst, "-p", "2", "--setup"}, {src, dst, "-p", "2", "--latest"},
+		{"-p", "--", src, dst}, {src, dst, "-p"}, {"-p", "2", "--setup"}, {"-p", "2", "--latest"},
+		{"-p", "--preset-list"}, {"-p", "2", "--preset-list"}, {"--preset-list", src, dst},
+		{"-p", "fast"}, {"-p=fast"}, {src, dst, "-p", "fast"}, {"-p", src, dst},
+		{"-ps", "2"}, {"--use-preset", "2"}, {"--new-preset"}, {"--defaults"},
+		{src, dst, "-ac", "flac", "-a", "128"},
+		{src, filepath.Join(filepath.Dir(src), "out.mov"), "-c", "av1"},
+		{src, filepath.Join(filepath.Dir(src), "out.webm"), "-c", "h264", "-ac", "aac"},
+		{src, dst, "-c", "hevc", "-f", "webm"},
+		{src, filepath.Join(filepath.Dir(src), "out.mov"), "-ac", "opus"},
+		{src, filepath.Join(filepath.Dir(src), "out.qt"), "-f", "mkv"},
+		{src, dst, "-c", "hevc", "-e", "8"},
+	}
+	for _, flag := range [][]string{{"-c", "av1"}, {"-f", "mkv"}, {"-ac", "aac"}, {"-e", "8"}, {"-l", "high"}, {"--crf", "30"}, {"-a", "64"}, {"-r", "30"}, {"-s", "720p"}, {"-q", "off"}, {"-d"}, {"--overwrite"}, {"-ff", "ffmpeg"}, {"-fp", "ffprobe"}, {"-t", "1"}, {"-ft"}, {"--vmaf"}} {
+		for _, editor := range [][]string{{"-p"}, {"-p", "2"}, {"--preset-list"}} {
+			cases = append(cases, append(append([]string{}, editor...), flag...))
+		}
+	}
+	for _, codec := range []string{"prores", "ffv1", "theora"} {
+		out := filepath.Join(filepath.Dir(src), "output."+config.Recommended(codec))
+		for _, flag := range [][]string{{"--crf", "30"}, {"-e", "fast"}} {
+			cases = append(cases, append([]string{src, out, "-c", codec}, flag...))
+		}
+		if codec != "theora" {
+			cases = append(cases, []string{src, out, "1", "-c", codec})
+		}
+	}
+	cases = append(cases, []string{src, dst, "-c", "ffv1", "-l", "high"})
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var out bytes.Buffer
+			code := MainWith(context.Background(), args, "test", Env{Out: &out, IsTerminalIn: boolPtr(true), IsTerminalOut: boolPtr(true),
+				Store:       func() (config.Store, error) { t.Fatal("store opened"); return config.Store{}, nil },
+				ResolveTool: func(string, string) (string, error) { t.Fatal("tool resolved"); return "", nil },
+				RunSession: func(context.Context, tui.Session, tui.SessionOptions) (*tui.Session, error) {
+					t.Fatal("TUI opened")
+					return nil, nil
+				},
+			})
+			if code != 2 || !strings.HasPrefix(out.String(), "error: ") || strings.Count(out.String(), "\n") != 1 {
+				t.Fatalf("%d %s", code, out.String())
+			}
+		})
+	}
+}
+
+func TestV4CodecContainerAudioAndSpeedValues(t *testing.T) {
+	for _, codec := range config.VideoCodecs {
+		p, err := Parse([]string{"in", "out." + config.Recommended(codec), "-C", codec})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := Resolve(p, nil, nil)
+		if err != nil || run.Settings.Codec != codec || run.Origins["codec"] != "explicit" {
+			t.Fatalf("%s: %+v %v", codec, run, err)
+		}
+	}
+	for _, container := range append(append([]string{}, config.Containers...), "quicktime", "mpegts") {
+		p, err := Parse([]string{"in", "out", "--container=" + strings.ToUpper(container)})
+		want := container
+		if container == "quicktime" {
+			want = "mov"
+		}
+		if container == "mpegts" {
+			want = "ts"
+		}
+		if err != nil || p.Settings.Container != want || p.Origins["container"] != "explicit" {
+			t.Fatalf("%s: %+v %v", container, p, err)
+		}
+	}
+	for _, codec := range config.AudioCodecs {
+		p, err := Parse([]string{"in", "out.mkv", "--AUDIO-CODEC=" + strings.ToUpper(codec)})
+		run, resolveErr := Resolve(p, nil, nil)
+		if err != nil || resolveErr != nil || run.Settings.AudioCodec != codec || run.Origins["audio_codec"] != "explicit" {
+			t.Fatalf("%s: %+v %v %v", codec, run, err, resolveErr)
+		}
+	}
+	for _, speed := range []string{"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo", "0", "13"} {
+		p, err := Parse([]string{"in", "out", "--ENC-SPEED=" + speed})
+		if err != nil || p.Settings.Preset != speed || p.Origins["preset"] != "explicit" {
+			t.Fatalf("%s: %+v %v", speed, p, err)
+		}
+	}
+}
+
+func TestV4ResolutionAdaptationLocksAndWarnings(t *testing.T) {
+	for _, codec := range []string{"h264", "hevc"} {
+		p, _ := Parse([]string{"in", "out.mp4", "5", "-c", codec})
+		run, err := Resolve(p, nil, nil)
+		if err != nil || run.Settings.Preset != "fast" || run.Origins["preset"] != "factory" || run.Origins["container"] != "extension" {
+			t.Fatalf("%s: %+v %v", codec, run, err)
+		}
+	}
+	latest := config.FactoryPreset().Settings()
+	latest.CRF, latest.Quality, latest.AudioCodec = number(38), "", ""
+	for _, codec := range []string{"prores", "theora", "ffv1"} {
+		p, _ := Parse([]string{"in", "out." + config.Recommended(codec), "--latest", "-c", codec})
+		run, err := Resolve(p, nil, &latest)
+		quality := "balanced"
+		if codec == "ffv1" {
+			quality = ""
+		}
+		if err != nil || run.Settings.CRF != nil || run.Settings.Quality != quality || latest.CRF == nil || latest.AudioCodec != "" {
+			t.Fatalf("%s: %+v %v", codec, run, err)
+		}
+	}
+	for ext, container := range map[string]string{"MP4": "mp4", "mkv": "mkv", "webm": "webm", "mov": "mov", "qt": "mov", "avi": "avi", "ogg": "ogg", "ogv": "ogg", "ts": "ts", "nut": "nut"} {
+		if got := destinationContainer(`C:\export\out.` + ext); got != container {
+			t.Fatalf("%s: %s", ext, got)
+		}
+	}
+	p, _ := Parse([]string{"in", "out.qt", "-c", "hevc"})
+	run, err := Resolve(p, nil, nil)
+	if err != nil || run.Settings.AudioCodec != "aac" || !reflect.DeepEqual(run.Warnings, []string{"mov does not accept opus; using aac"}) {
+		t.Fatalf("%+v %v", run, err)
+	}
+	run, err = validateRun(run)
+	if err != nil || len(run.Warnings) != 0 {
+		t.Fatalf("stale warnings: %+v %v", run, err)
+	}
+	p, _ = Parse([]string{"in", "out.ogv", "-c", "theora"})
+	run, err = Resolve(p, nil, nil)
+	if err != nil || run.Settings.Container != "ogg" || run.Origins["container"] != "extension" {
+		t.Fatalf("%+v %v", run, err)
+	}
+	for _, args := range [][]string{{"in", "exports"}, {"in", "exports", "-f", "mkv"}} {
+		p, _ = Parse(args)
+		run, err = Resolve(p, nil, nil)
+		if err != nil || run.Origins["container"] == "extension" {
+			t.Fatalf("directory locked: %+v %v", run, err)
+		}
+	}
+	p, _ = Parse([]string{"in", "out.mov", "-ac", "opus"})
+	_, err = Resolve(p, nil, nil)
+	if err == nil || err.Error() != "mov does not accept av1; use -c hevc, h264, prores, ffv1 or theora" {
+		t.Fatalf("video priority: %v", err)
+	}
+}
+
+func TestV4PresetListControlLabels(t *testing.T) {
+	for _, codec := range []string{"prores", "theora", "ffv1"} {
+		p := config.FactoryPreset()
+		p.Codec, p.Container, p.AudioCodec = codec, "mkv", "flac"
+		kbps := 128
+		p.AudioKbps = &kbps
+		var out bytes.Buffer
+		printPreset(console.New(&out, false), p)
+		if !strings.Contains(out.String(), "speed n/a") || !strings.Contains(out.String(), "audio_codec:flac audio:lossless") || strings.Contains(out.String(), "128k") {
+			t.Fatalf("%s", out.String())
+		}
+		if codec == "ffv1" && !strings.Contains(out.String(), "n/a lossless") {
+			t.Fatalf("%s", out.String())
+		}
 	}
 }

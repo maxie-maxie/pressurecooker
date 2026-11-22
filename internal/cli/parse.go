@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/big"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -25,30 +26,33 @@ type Run struct {
 	TargetBytes                          *int64
 	Mode                                 Mode
 	DryRun, Overwrite, Setup, Latest     bool
+	ManualSetup                          bool
 	ShowHelp, ShowDetails, ShowVersion   bool
 	ForceTarget, VMAF, ListPresets       bool
 	PresetID                             int
-	NewPreset                            *int
+	EditPreset                           *int
+	Warnings                             []string
 }
 
 var aliases = map[string]string{
 	"-t": "target", "--target": "target",
 	"-c": "codec", "--codec": "codec", "-f": "container", "--container": "container",
-	"-p": "preset", "--preset": "preset", "-l": "quality", "--quality": "quality", "--crf": "crf",
+	"-p": "edit-preset", "--preset": "edit-preset", "-e": "preset", "--enc-speed": "preset",
+	"-ac": "audio_codec", "--audio-codec": "audio_codec", "-l": "quality", "--quality": "quality", "--crf": "crf",
 	"-a": "audio", "--audio-kbps": "audio", "-r": "fps", "--fps": "fps",
 	"-s": "resolution", "--resolution": "resolution", "-q": "hw", "--hw": "hw",
-	"-ps": "use-preset", "--use-preset": "use-preset",
 	"-d": "dry-run", "--dry-run": "dry-run",
 	"-ff": "ffmpeg", "--ffmpeg": "ffmpeg", "-fp": "ffprobe", "--ffprobe": "ffprobe",
 	"-ft": "force-target", "--force-target": "force-target", "--vmaf": "vmaf",
 	"--setup": "setup", "--latest": "latest", "--overwrite": "overwrite",
-	"--new-preset": "new-preset", "--preset-list": "preset-list",
+	"--preset-list": "preset-list",
 }
 
 var retired = map[string]string{
 	"-v": "progress is always shown", "--verbose": "progress is always shown",
 	"-co": "omit the size to convert", "--conversion": "omit the size to convert",
-	"--defaults": "use --new-preset 1", "--force": "use -ft",
+	"--defaults": "use --preset 1", "--force": "use -ft",
+	"-ps": "use -p N", "--use-preset": "use -p N", "--new-preset": "use --preset",
 }
 
 func flagName(token string) string {
@@ -95,14 +99,14 @@ func Parse(args []string) (Run, error) {
 			positional = append(positional, token)
 			continue
 		}
-		if key != "new-preset" && key != "preset-list" {
+		if key != "edit-preset" && key != "preset-list" {
 			processing = true
 		}
 		_, inline, hasInline := strings.Cut(token, "=")
 		switch key {
-		case "new-preset":
+		case "edit-preset":
 			n := 0
-			if hasInline || (i+1 < len(args) && args[i+1] != "--" && !strings.HasPrefix(args[i+1], "-")) {
+			if hasInline || (i+1 < len(args) && args[i+1] != "--" && !isOption(args[i+1])) {
 				value := inline
 				if !hasInline {
 					i++
@@ -114,7 +118,7 @@ func Parse(args []string) (Run, error) {
 					return Run{}, err
 				}
 			}
-			run.NewPreset = &n
+			run.EditPreset = &n
 		case "dry-run", "force-target", "vmaf", "setup", "latest", "overwrite", "preset-list":
 			if hasInline {
 				return Run{}, fmt.Errorf("%s does not take a value", name)
@@ -155,9 +159,16 @@ func Parse(args []string) (Run, error) {
 			}
 		}
 	}
-	if run.NewPreset != nil || run.ListPresets {
-		if processing || len(positional) > 0 || (run.NewPreset != nil && run.ListPresets) {
-			return Run{}, fmt.Errorf("--new-preset and --preset-list cannot be combined with paths or processing flags")
+	if run.EditPreset != nil && len(positional) > 0 {
+		if *run.EditPreset == 0 {
+			return Run{}, fmt.Errorf("--preset with paths requires a value N")
+		}
+		run.PresetID, run.Origins["use-preset"] = *run.EditPreset, "explicit"
+		run.EditPreset = nil
+	}
+	if run.EditPreset != nil || run.ListPresets {
+		if processing || len(positional) > 0 || (run.EditPreset != nil && run.ListPresets) {
+			return Run{}, fmt.Errorf("--preset editor and --preset-list cannot be combined with paths or processing flags")
 		}
 		return run, nil
 	}
@@ -196,7 +207,10 @@ func Parse(args []string) (Run, error) {
 		return Run{}, fmt.Errorf("-ft and --vmaf require a size")
 	}
 	if run.Latest && run.Origins["use-preset"] == "explicit" {
-		return Run{}, fmt.Errorf("cannot combine --latest and --use-preset")
+		return Run{}, fmt.Errorf("cannot combine --latest and --preset")
+	}
+	if run.Setup && run.Origins["use-preset"] == "explicit" {
+		return Run{}, fmt.Errorf("cannot combine --setup and --preset")
 	}
 	if run.Origins["crf"] == "explicit" && run.Origins["quality"] == "explicit" {
 		return Run{}, fmt.Errorf("cannot combine --crf and --quality")
@@ -213,7 +227,7 @@ func isOption(token string) bool {
 func parsePresetID(value string) (int, error) {
 	n, err := strconv.Atoi(value)
 	if err != nil || n < 1 || !bareInteger.MatchString(value) {
-		return 0, fmt.Errorf("preset number must be an integer >= 1")
+		return 0, fmt.Errorf("preset number must be an integer; encoder speed is -e/--enc-speed")
 	}
 	return n, nil
 }
@@ -254,22 +268,26 @@ func setOption(run *Run, key, value string) error {
 			return err
 		}
 		run.TargetBytes = &n
-	case "use-preset":
-		n, err := parsePresetID(value)
-		if err != nil {
-			return err
-		}
-		run.PresetID = n
 	case "codec":
-		if lower != "h264" && lower != "hevc" && lower != "av1" {
-			return fmt.Errorf("codec must be h264, hevc or av1")
+		if !slices.Contains(config.VideoCodecs, lower) {
+			return fmt.Errorf("codec must be one of %s", strings.Join(config.VideoCodecs, ", "))
 		}
 		run.Settings.Codec = lower
 	case "container":
-		if lower != "mp4" && lower != "mkv" && lower != "webm" {
-			return fmt.Errorf("container must be mp4, mkv or webm")
+		if lower == "quicktime" {
+			lower = "mov"
+		} else if lower == "mpegts" {
+			lower = "ts"
+		}
+		if !slices.Contains(config.Containers, lower) {
+			return fmt.Errorf("container must be one of %s", strings.Join(config.Containers, ", "))
 		}
 		run.Settings.Container = lower
+	case "audio_codec":
+		if !slices.Contains(config.AudioCodecs, lower) {
+			return fmt.Errorf("audio codec must be one of %s", strings.Join(config.AudioCodecs, ", "))
+		}
+		run.Settings.AudioCodec = lower
 	case "quality":
 		if lower != "high" && lower != "balanced" && lower != "small" {
 			return fmt.Errorf("quality must be high, balanced or small")
@@ -304,7 +322,7 @@ func setOption(run *Run, key, value string) error {
 			run.Settings.FPS = &n
 		} else {
 			if n < 0 || n > 63 {
-				return fmt.Errorf("crf must be from 0 to 51 for h264/hevc, or 1 to 63 for av1")
+				return fmt.Errorf("crf must be 0-51 for h264/hevc, 1-63 for av1, or 0-63 for vp9")
 			}
 			run.Settings.CRF = &n
 		}

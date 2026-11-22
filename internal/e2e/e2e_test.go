@@ -82,13 +82,26 @@ func invalidArguments() [][]string {
 		{"input.mp4", "output.mp4", "1", "--crf", "30"},
 		{"input.mp4", "output.mp4", "1", "-l", "small"},
 		{"input.mp4", "output.mp4", "-ft"}, {"input.mp4", "output.mp4", "--vmaf"},
-		{"input.mp4", "output.mp4", "--latest", "-ps", "2"},
+		{"input.mp4", "output.mp4", "--latest", "-p", "2"},
+		{"input.mp4", "output.mp4", "--setup", "-p", "2"},
 		{"input.mp4", "output.mp4", "--crf", "30", "-l", "small"},
-		{"--new-preset", "input.mp4", "output.mp4"}, {"--preset-list", "input.mp4", "output.mp4"},
-		{"--new-preset", "-c", "h264"}, {"--preset-list", "-t", "1"},
+		{"input.mp4", "output.mp4", "-p"}, {"--preset", "--", "input.mp4", "output.mp4"},
+		{"--preset-list", "input.mp4", "output.mp4"},
+		{"-p", "-c", "h264"}, {"-p", "2", "-e", "fast"}, {"--preset-list", "-t", "1"},
+		{"-p", "--preset-list"}, {"-p", "fast"}, {"input.mp4", "output.mp4", "-p", "fast"},
+		{"input.mp4", "output.mp4", "-a", "128", "-ac", "flac"},
 	}
-	for _, flag := range []string{"-v", "--verbose", "-co", "--conversion", "--defaults", "--force"} {
+	for _, flag := range []string{"-ps", "--use-preset", "--new-preset", "-v", "--verbose", "-co", "--conversion", "--defaults", "--force"} {
 		cases = append(cases, []string{"input.mp4", "output.mp4", flag})
+	}
+	for _, codec := range []string{"prores", "ffv1", "theora"} {
+		for _, option := range [][]string{{"--crf", "30"}, {"-e", "fast"}} {
+			args := []string{"input.mp4", "output.mkv", "-c", codec}
+			cases = append(cases, append(args, option...))
+		}
+		if codec != "theora" {
+			cases = append(cases, []string{"input.mp4", "output.mkv", "5", "-c", codec})
+		}
 	}
 	return cases
 }
@@ -99,6 +112,7 @@ func TestInvalidArgumentsBeforeConfigAndTools(t *testing.T) {
 			profile := t.TempDir()
 			t.Setenv("APPDATA", profile)
 			t.Setenv("XDG_CONFIG_HOME", profile)
+			args = withValidSource(t, args)
 			var out bytes.Buffer
 			code := cli.MainWith(context.Background(), args, "test", cli.Env{
 				Out:         &out,
@@ -111,6 +125,24 @@ func TestInvalidArgumentsBeforeConfigAndTools(t *testing.T) {
 			assertEmptyDir(t, profile)
 		})
 	}
+}
+
+func withValidSource(t *testing.T, args []string) []string {
+	t.Helper()
+	root := t.TempDir()
+	src := filepath.Join(root, "input.mp4")
+	if err := os.WriteFile(src, []byte("unchanged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := append([]string(nil), args...)
+	for i, arg := range result {
+		if arg == "input.mp4" {
+			result[i] = src
+		} else if strings.HasPrefix(arg, "output.") {
+			result[i] = filepath.Join(root, arg)
+		}
+	}
+	return result
 }
 
 type probeOnlyRunner struct{ t *testing.T }
@@ -129,7 +161,7 @@ func (r probeOnlyRunner) Run(_ context.Context, args []string, _ func(console.Ev
 }
 
 func TestNonTerminalPromptsPublishNothing(t *testing.T) {
-	for _, kind := range []string{"conversion", "source-cap", "setup", "new-preset"} {
+	for _, kind := range []string{"conversion", "source-cap", "setup", "preset"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
 			profile := filepath.Join(root, "profile")
@@ -149,8 +181,8 @@ func TestNonTerminalPromptsPublishNothing(t *testing.T) {
 				args = append(args, "1")
 			case "setup":
 				args = append(args, "--setup")
-			case "new-preset":
-				args = []string{"--new-preset"}
+			case "preset":
+				args = []string{"--preset"}
 			}
 			var out bytes.Buffer
 			code := cli.MainWith(context.Background(), args, "test", cli.Env{

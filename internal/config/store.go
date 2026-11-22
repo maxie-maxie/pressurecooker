@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 )
 
@@ -100,6 +101,12 @@ func decodeSettings(data []byte, legacy bool) (Settings, error) {
 		}
 		result.Quality = "balanced"
 	}
+	if legacy {
+		result.AudioCodec = "opus"
+		if result.CRF != nil {
+			result.Quality = ""
+		}
+	}
 	return result, Validate(result)
 }
 
@@ -117,38 +124,39 @@ func decodeLatest(data []byte) (Settings, error) {
 		if err != nil {
 			return Settings{}, err
 		}
-		if result.CRF != nil {
-			result.Quality = ""
-		}
 		result.AudioSource = false
 		if err := validateLatest(result); err != nil {
 			return Settings{}, err
 		}
 		return result, nil
 	}
-	if version != 3 {
-		return Settings{}, fmt.Errorf("unsupported latest version; expected 3")
+	if version != 3 && version != 4 {
+		return Settings{}, fmt.Errorf("unsupported latest version; expected 4")
 	}
-	return decodeLatestV3(fields)
+	return decodeLatestV34(fields, version)
 }
 
-func decodeLatestV3(fields map[string]json.RawMessage) (Settings, error) {
+func decodeLatestV34(fields map[string]json.RawMessage, version int) (Settings, error) {
 	required := []string{"version", "codec", "container", "preset", "audio_kbps", "fps", "resolution", "hw"}
+	if version == 4 {
+		required = append(required, "audio_codec")
+	}
 	allowed := append(append([]string{}, required...), "quality", "crf")
 	if err := requireKeys(fields, required, allowed); err != nil {
 		return Settings{}, err
 	}
-	_, quality := fields["quality"]
-	_, crf := fields["crf"]
-	if quality == crf {
-		return Settings{}, fmt.Errorf("latest must contain exactly one of quality or crf")
-	}
 	result := Factory()
 	result.Quality, result.CRF, result.AudioSource = "", nil, false
-	for key, destination := range map[string]any{
+	targets := map[string]any{
 		"codec": &result.Codec, "container": &result.Container, "preset": &result.Preset,
 		"fps": &result.FPS, "resolution": &result.Resolution, "hw": &result.HW,
-	} {
+	}
+	if version == 4 {
+		targets["audio_codec"] = &result.AudioCodec
+	} else {
+		result.AudioCodec = "opus"
+	}
+	for key, destination := range targets {
 		if key != "fps" && isJSONNull(fields[key]) {
 			return Settings{}, fmt.Errorf("%s cannot be null", key)
 		}
@@ -156,19 +164,10 @@ func decodeLatestV3(fields map[string]json.RawMessage) (Settings, error) {
 			return Settings{}, fmt.Errorf("invalid %s: %w", key, err)
 		}
 	}
-	if quality {
-		if err := json.Unmarshal(fields["quality"], &result.Quality); err != nil {
-			return Settings{}, fmt.Errorf("invalid quality: %w", err)
-		}
-	} else {
-		if bytes.Equal(bytes.TrimSpace(fields["crf"]), []byte("null")) {
-			return Settings{}, fmt.Errorf("crf cannot be null")
-		}
-		if err := json.Unmarshal(fields["crf"], &result.CRF); err != nil {
-			return Settings{}, fmt.Errorf("invalid crf: %w", err)
-		}
+	if err := decodeQualityAndCRF(fields, result.Codec, &result.Quality, &result.CRF); err != nil {
+		return Settings{}, fmt.Errorf("latest: %w", err)
 	}
-	if bytes.Equal(bytes.TrimSpace(fields["audio_kbps"]), []byte("null")) {
+	if isJSONNull(fields["audio_kbps"]) {
 		result.AudioKbps, result.AudioSource = 128, true
 	} else if err := json.Unmarshal(fields["audio_kbps"], &result.AudioKbps); err != nil {
 		return Settings{}, fmt.Errorf("invalid audio_kbps: %w", err)
@@ -186,17 +185,21 @@ func validateLatest(s Settings) error {
 	}
 	if err := ValidatePreset(Preset{
 		Label: "latest", Codec: s.Codec, Container: s.Container, Speed: s.Preset,
-		Quality: s.Quality, CRF: s.CRF, AudioKbps: audio, FPS: s.FPS, Resolution: s.Resolution,
+		Quality: s.Quality, CRF: s.CRF, AudioCodec: s.AudioCodec, AudioKbps: audio, FPS: s.FPS, Resolution: s.Resolution,
 	}); err != nil {
 		return err
 	}
 	if s.HW != "auto" && s.HW != "vulkan" && s.HW != "qsv" && s.HW != "off" {
 		return fmt.Errorf("hw must be auto, vulkan, qsv or off")
 	}
+	caps := CodecCaps(s.Codec)
+	if (s.HW == "vulkan" || s.HW == "qsv") && !slices.Contains(caps.HW, s.HW) {
+		return fmt.Errorf("%s does not support %s hardware encoding", s.Codec, s.HW)
+	}
 	if s.CRF != nil && (s.HW == "vulkan" || s.HW == "qsv") {
 		return fmt.Errorf("raw CRF is unsupported on %s; use --quality or --hw off", s.HW)
 	}
-	if s.HW == "qsv" {
+	if s.HW == "qsv" && caps.Speed {
 		if _, err := ResolvePreset(s.Preset, s.Codec, true); err != nil {
 			return err
 		}
@@ -211,6 +214,7 @@ type latestFile struct {
 	Preset     string   `json:"preset"`
 	Quality    string   `json:"quality,omitempty"`
 	CRF        *float64 `json:"crf,omitempty"`
+	AudioCodec string   `json:"audio_codec"`
 	AudioKbps  *int     `json:"audio_kbps"`
 	FPS        *float64 `json:"fps"`
 	Resolution string   `json:"resolution"`
@@ -241,8 +245,8 @@ func (s Store) SaveLatest(settings Settings) error {
 		audio = &settings.AudioKbps
 	}
 	data, err := json.MarshalIndent(latestFile{
-		Version: 3, Codec: settings.Codec, Container: settings.Container, Preset: settings.Preset,
-		Quality: settings.Quality, CRF: settings.CRF, AudioKbps: audio, FPS: settings.FPS,
+		Version: 4, Codec: settings.Codec, Container: settings.Container, Preset: settings.Preset,
+		Quality: settings.Quality, CRF: settings.CRF, AudioCodec: settings.AudioCodec, AudioKbps: audio, FPS: settings.FPS,
 		Resolution: settings.Resolution, HW: settings.HW,
 	}, "", "  ")
 	if err != nil {

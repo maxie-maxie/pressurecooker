@@ -1,0 +1,24 @@
+Setup  an interactive TUI-type setup
+
+Container
+Current: mp4
+> mp4 (recommended)
+  mkv
+  webm [unavailable: incompatible with hevc]
+  mov
+  avi
+  ogg [unavailable: incompatible with hevc]
+  ts
+  nut
+
+
+
+
+
+
+
+
+
+
+
+Up/Down select  Enter next  Left/Shift+Tab back  Esc cancel  |  step 3/12  preset Default

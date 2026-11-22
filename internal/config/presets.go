@@ -1,10 +1,8 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,6 +20,7 @@ type Preset struct {
 	Speed       string   `json:"preset"`
 	Quality     string   `json:"quality,omitempty"`
 	CRF         *float64 `json:"crf,omitempty"`
+	AudioCodec  string   `json:"audio_codec"`
 	AudioKbps   *int     `json:"audio_kbps"` // nil: keep source audio
 	FPS         *float64 `json:"fps"`        // nil: source; otherwise a cap
 	Resolution  string   `json:"resolution"` // "": source; otherwise a cap
@@ -36,6 +35,7 @@ func FactoryPreset() Preset {
 		Container:   "mp4",
 		Speed:       "8",
 		Quality:     "balanced",
+		AudioCodec:  "opus",
 		Resolution:  "1080p",
 	}
 }
@@ -53,44 +53,18 @@ func ValidatePreset(p Preset) error {
 	if utf8.RuneCountInString(p.Description) > 120 {
 		return fmt.Errorf("preset description must be at most 120 characters")
 	}
-	if p.Codec != "h264" && p.Codec != "hevc" && p.Codec != "av1" {
-		return fmt.Errorf("codec must be h264, hevc or av1")
+	audioKbps := 0
+	if p.AudioKbps != nil {
+		audioKbps = *p.AudioKbps
 	}
-	if p.Container != "mp4" && p.Container != "mkv" && p.Container != "webm" {
-		return fmt.Errorf("container must be mp4, mkv or webm")
-	}
-	if p.Container == "webm" && p.Codec != "av1" {
-		return fmt.Errorf("webm requires codec av1")
-	}
-	if _, err := ResolvePreset(p.Speed, p.Codec, false); err != nil {
-		return err
-	}
-	if (p.Quality == "") == (p.CRF == nil) {
-		return fmt.Errorf("preset must set exactly one of quality or crf")
-	}
-	if p.Quality != "" && p.Quality != "high" && p.Quality != "balanced" && p.Quality != "small" {
-		return fmt.Errorf("quality must be high, balanced or small")
-	}
-	if p.CRF != nil {
-		lo, hi := 0.0, 51.0
-		if p.Codec == "av1" {
-			lo, hi = 1, 63
-		}
-		if math.IsNaN(*p.CRF) || math.IsInf(*p.CRF, 0) || *p.CRF < lo || *p.CRF > hi {
-			return fmt.Errorf("crf for %s must be a finite number from %.0f to %.0f", p.Codec, lo, hi)
-		}
-	}
-	if p.AudioKbps != nil && *p.AudioKbps <= 0 {
-		return fmt.Errorf("audio-kbps must be a positive integer")
-	}
-	if p.FPS != nil && (math.IsNaN(*p.FPS) || math.IsInf(*p.FPS, 0) || *p.FPS <= 0 || *p.FPS > 1000) {
-		return fmt.Errorf("fps must be a finite number greater than 0 and at most 1000")
-	}
-	_, _, err := ParseResolution(p.Resolution)
-	return err
+	return validateEncoding(p.Codec, p.Container, p.AudioCodec, p.Speed, p.Quality, p.CRF, p.AudioKbps != nil, audioKbps, p.FPS, p.Resolution)
 }
 
 func (p Preset) Settings() Settings {
+	audioCodec := p.AudioCodec
+	if audioCodec == "" {
+		audioCodec = "opus"
+	}
 	s := Settings{
 		Codec:       p.Codec,
 		Container:   p.Container,
@@ -98,6 +72,7 @@ func (p Preset) Settings() Settings {
 		Quality:     p.Quality,
 		AudioKbps:   128,
 		AudioSource: p.AudioKbps == nil,
+		AudioCodec:  audioCodec,
 		Resolution:  p.Resolution,
 		HW:          "auto",
 	}
@@ -140,8 +115,8 @@ func decodePresets(data []byte) ([]Preset, error) {
 		return nil, err
 	}
 	var version int
-	if err := json.Unmarshal(fields["version"], &version); err != nil || version != 3 {
-		return nil, fmt.Errorf("unsupported preset version; expected 3")
+	if err := json.Unmarshal(fields["version"], &version); err != nil || (version != 3 && version != 4) {
+		return nil, fmt.Errorf("unsupported preset version; expected 4")
 	}
 	if firstNonSpace(fields["presets"]) != '[' {
 		return nil, fmt.Errorf("presets must be a JSON array")
@@ -153,7 +128,7 @@ func decodePresets(data []byte) ([]Preset, error) {
 	presets := make([]Preset, 0, len(entries))
 	seen := make(map[int]bool, len(entries))
 	for i, entry := range entries {
-		p, err := decodePreset(entry)
+		p, err := decodePreset(entry, version)
 		if err != nil {
 			return nil, fmt.Errorf("preset %d: %w", i+1, err)
 		}
@@ -170,45 +145,80 @@ func decodePresets(data []byte) ([]Preset, error) {
 	return presets, nil
 }
 
-func decodePreset(data []byte) (Preset, error) {
+func decodeQualityAndCRF(fields map[string]json.RawMessage, codec string, qualityOut *string, crfOut **float64) error {
+	_, hasQuality := fields["quality"]
+	_, hasCRF := fields["crf"]
+	if hasQuality && hasCRF {
+		return fmt.Errorf("must contain at most one of quality or crf")
+	}
+	caps := CodecCaps(codec)
+	if caps.CRFHi == 0 && hasCRF {
+		if isJSONNull(fields["crf"]) {
+			return fmt.Errorf("crf cannot be null")
+		}
+		return fmt.Errorf("crf is not supported for %s", codec)
+	}
+	if caps.Quality {
+		if caps.CRFHi > 0 && !hasQuality && !hasCRF {
+			return fmt.Errorf("must contain exactly one of quality or crf")
+		}
+		if caps.CRFHi == 0 && !hasQuality {
+			return fmt.Errorf("must contain quality")
+		}
+	}
+	if hasQuality {
+		if isJSONNull(fields["quality"]) {
+			return fmt.Errorf("quality cannot be null")
+		}
+		if err := json.Unmarshal(fields["quality"], qualityOut); err != nil {
+			return fmt.Errorf("invalid quality: %w", err)
+		}
+	}
+	if hasCRF {
+		if isJSONNull(fields["crf"]) {
+			return fmt.Errorf("crf cannot be null")
+		}
+		if err := json.Unmarshal(fields["crf"], crfOut); err != nil {
+			return fmt.Errorf("invalid crf: %w", err)
+		}
+	}
+	return nil
+}
+
+func decodePreset(data []byte, version int) (Preset, error) {
 	fields, err := decodeObject(data)
 	if err != nil {
 		return Preset{}, err
 	}
 	required := []string{"id", "label", "description", "codec", "container", "preset", "audio_kbps", "fps", "resolution"}
+	if version == 4 {
+		required = append(required, "audio_codec")
+	}
 	allowed := append(slices.Clone(required), "quality", "crf")
 	if err := requireKeys(fields, required, allowed); err != nil {
 		return Preset{}, err
 	}
-	_, quality := fields["quality"]
-	_, crf := fields["crf"]
-	if quality == crf {
-		return Preset{}, fmt.Errorf("preset must contain exactly one of quality or crf")
-	}
 	var p Preset
-	for key, destination := range map[string]any{
+	targets := map[string]any{
 		"id": &p.ID, "label": &p.Label, "description": &p.Description,
 		"codec": &p.Codec, "container": &p.Container, "preset": &p.Speed,
 		"audio_kbps": &p.AudioKbps, "fps": &p.FPS, "resolution": &p.Resolution,
-	} {
-		if (key == "label" || key == "description" || key == "codec" || key == "container" || key == "preset" || key == "resolution") && isJSONNull(fields[key]) {
+	}
+	if version == 4 {
+		targets["audio_codec"] = &p.AudioCodec
+	} else {
+		p.AudioCodec = "opus"
+	}
+	for key, destination := range targets {
+		if (key == "label" || key == "description" || key == "codec" || key == "container" || key == "preset" || key == "audio_codec" || key == "resolution") && isJSONNull(fields[key]) {
 			return Preset{}, fmt.Errorf("%s cannot be null", key)
 		}
 		if err := json.Unmarshal(fields[key], destination); err != nil {
 			return Preset{}, fmt.Errorf("invalid %s: %w", key, err)
 		}
 	}
-	if quality {
-		if err := json.Unmarshal(fields["quality"], &p.Quality); err != nil {
-			return Preset{}, fmt.Errorf("invalid quality: %w", err)
-		}
-	} else {
-		if bytes.Equal(bytes.TrimSpace(fields["crf"]), []byte("null")) {
-			return Preset{}, fmt.Errorf("crf cannot be null")
-		}
-		if err := json.Unmarshal(fields["crf"], &p.CRF); err != nil {
-			return Preset{}, fmt.Errorf("invalid crf: %w", err)
-		}
+	if err := decodeQualityAndCRF(fields, p.Codec, &p.Quality, &p.CRF); err != nil {
+		return Preset{}, fmt.Errorf("preset: %w", err)
 	}
 	if err := ValidatePreset(p); err != nil {
 		return Preset{}, err
@@ -247,7 +257,7 @@ func (s Store) SavePreset(p Preset) (Preset, error) {
 	data, err := json.MarshalIndent(struct {
 		Version int      `json:"version"`
 		Presets []Preset `json:"presets"`
-	}{Version: 3, Presets: presets}, "", "  ")
+	}{Version: 4, Presets: presets}, "", "  ")
 	if err != nil {
 		return Preset{}, fmt.Errorf("%s: %w", path, err)
 	}

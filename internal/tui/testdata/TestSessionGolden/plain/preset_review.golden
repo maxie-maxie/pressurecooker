@@ -8,6 +8,7 @@ Review
   Container: mp4
   Encoder speed: 8
   Quality or CRF: balanced
+  Audio codec: opus
   Audio: source
   FPS: source
   Resolution: 1080p
@@ -20,5 +21,4 @@ Review
 
 
 
-
-Up/Down select  Enter confirm/edit  Left/Shift+Tab back  Esc cancel  |  step 10/10  preset Default
+Up/Down select  Enter confirm/edit  Left/Shift+Tab back  Esc cancel  |  step 11/11  preset Default

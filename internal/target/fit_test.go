@@ -211,7 +211,7 @@ func TestForceFastMetricsBoundsAndSource(t *testing.T) {
 func TestForceFastRetriesAndExplicitLocks(t *testing.T) {
 	req := baseTestRequest(t.TempDir(), 5)
 	req.Settings.Resolution, req.Settings.FPS = "720p", f64ForFit(30)
-	req.Origins = config.Origins{"resolution": "explicit", "fps": "explicit", "audio": "explicit", "preset": "explicit", "hw": "explicit"}
+	req.Origins = config.Origins{"codec": "explicit", "container": "explicit", "audio_codec": "explicit", "resolution": "explicit", "fps": "explicit", "audio": "explicit", "preset": "explicit", "hw": "explicit"}
 	r := newFakeRunner(false)
 	r.onEncode = func(args []string, path string) (int64, int64, int64, float64, error) {
 		return 200_000, 190_000, 6000, 5, nil
@@ -292,11 +292,13 @@ func TestSizeEngineHardwareHeadroomAndFallback(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			req := baseTestRequest(t.TempDir(), 60)
 			req.Settings.HW = "auto"
+			req.Origins["codec"] = "explicit"
 			req.Encoder = ffmpeg.Encoder{Name: "hevc_vulkan", Backend: "Vulkan", Hardware: true}
 			if mode == "explicit" {
 				req.Origins["hw"] = "explicit"
 			}
 			r := newFakeRunner(false)
+			r.hwEncoders = map[string]bool{"hevc_vulkan": true}
 			var hardwareBitrates []int
 			r.onEncode = func(args []string, path string) (int64, int64, int64, float64, error) {
 				if slices.Contains(args, "hevc_vulkan") {
@@ -330,7 +332,7 @@ func TestSizeEngineHardwareHeadroomAndFallback(t *testing.T) {
 			if err != nil || out.File != req.Output || out.SampleEncodes > 3 || out.FullEncodes > 3 {
 				t.Fatalf("outcome: %+v %v", out, err)
 			}
-			if mode != "fit" && (out.Settings.HW != "off" || !slices.Contains(out.Changed, "hw")) {
+			if (mode == "sample-fallback" || mode == "final-fallback") && (out.Settings.HW != "off" || !slices.Contains(out.Changed, "hw")) {
 				t.Fatalf("missing fallback result: %+v", out)
 			}
 		})

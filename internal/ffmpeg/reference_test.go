@@ -64,18 +64,18 @@ func TestAudioSourceAndExplicitBitrate(t *testing.T) {
 		}
 		for _, sourceKbps := range []float64{0, 48, 256} {
 			m := Media{HasAudio: true, AudioCodec: codec, AudioKbps: sourceKbps}
-			s := config.Settings{AudioSource: true}
-			if args := audioArgs(container, s, m); !slices.Equal(args, []string{"-c:a", "copy"}) {
+			s := config.Settings{AudioSource: true, AudioCodec: codec}
+			if args, err := audioArgs(container, s, m, nil); err != nil || !slices.Equal(args, []string{"-c:a", "copy"}) {
 				t.Fatalf("source audio must copy: %v", args)
 			}
 			s.AudioSource, s.AudioKbps = false, 96
-			args := audioArgs(container, s, m)
-			if !slices.Contains(args, encoder) || !slices.Contains(args, "96k") || slices.Contains(args, "copy") {
+			args, err := audioArgs(container, s, m, nil)
+			if err != nil || !slices.Contains(args, encoder) || !slices.Contains(args, "96k") || slices.Contains(args, "copy") {
 				t.Fatalf("explicit audio must encode: %v", args)
 			}
 			s.AudioSource = true
-			m.AudioCodec = "flac"
-			if args = audioArgs(container, s, m); !slices.Contains(args, "128k") {
+			m.AudioCodec = "pcm_s16le"
+			if args, err = audioArgs(container, s, m, nil); err != nil || !slices.Contains(args, "128k") {
 				t.Fatalf("incompatible source must use 128k: %v", args)
 			}
 		}

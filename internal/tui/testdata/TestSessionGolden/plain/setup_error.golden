@@ -2,17 +2,17 @@ Setup  an interactive TUI-type setup
 
 Review
 > Confirm
-  Start from preset: Default
-  Codec: hevc
-  Container: webm
-  Encoder speed: fast
-  Quality or CRF: balanced
+  Codec: av1
+  Container: mp4
+  Encoder speed: 8
+  Quality or CRF: CRF 28 (edited)
+  Audio codec: opus
   Audio: source
   FPS: source
   Resolution: 1080p
-  Hardware: auto
+  Hardware: vulkan (edited)
   Size: Default (20 MB)
-Error: webm requires codec av1
+Error: raw CRF is unsupported on vulkan; use --quality or --hw off
 
 
 
@@ -21,4 +21,4 @@ Error: webm requires codec av1
 
 
 
-Up/Down select  Enter confirm/edit  Left/Shift+Tab back  Esc cancel  |  step 11/11  preset Default
+Up/Down select  Enter confirm/edit  Left/Shift+Tab back  Esc cancel  |  step 12/12  preset Default

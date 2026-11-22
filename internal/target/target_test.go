@@ -29,6 +29,9 @@ type fakeRunner struct {
 	onEncode     func(args []string, outPath string) (fileBytes int64, videoPkt int64, audioPkt int64, dur float64, err error)
 	onScore      func(args []string, samplePath string, metric string, logPath string) ([]float64, error)
 	fileMeta     map[string]fakeFileMeta
+	encoderList  string
+	encoderCalls int
+	hwEncoders   map[string]bool
 }
 
 type fakeFileMeta struct {
@@ -57,6 +60,17 @@ func (f *fakeRunner) Run(ctx context.Context, args []string, onEvent func(consol
 
 	if strings.Contains(bin, "ffprobe") {
 		return f.handleFFprobe(args)
+	}
+	if slices.Contains(args, "-encoders") {
+		f.encoderCalls++
+		return ffmpeg.Result{Stdout: f.encoderList}, nil
+	}
+	if i := slices.Index(args, "-i"); i >= 0 && strings.HasPrefix(args[i+1], "color=") {
+		name := args[slices.Index(args, "-c:v")+1]
+		if f.hwEncoders[name] {
+			return ffmpeg.Result{}, nil
+		}
+		return ffmpeg.Result{ExitCode: 1, StderrTail: []string{"no supported GPU"}}, nil
 	}
 	if slices.Contains(args, "-filters") {
 		f.filterCalls++

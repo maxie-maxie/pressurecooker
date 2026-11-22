@@ -42,7 +42,7 @@ func TestUnrecognizedExtensionTreatedAsDirectory(t *testing.T) {
 	s := config.Factory()
 	targetBytes := int64(20000000)
 
-	destDir := filepath.Join(root, "out.avi")
+	destDir := filepath.Join(root, "out.wmv")
 	dest, err := Resolve(src, destDir, s, "default", targetBytes, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -320,5 +320,117 @@ func TestPOSIXLinkCollisionReportsDestinationAppeared(t *testing.T) {
 	)
 	if err != nil || !removed {
 		t.Fatalf("expected clean link+remove, got err=%v removed=%v", err, removed)
+	}
+}
+
+func TestAllContainersAndExtensionAliases(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "clip.mp4")
+	cases := []struct {
+		filename, codec, reqContainer, wantContainer string
+	}{
+		{"out.mp4", "av1", "", "mp4"},
+		{"out.mkv", "ffv1", "", "mkv"},
+		{"out.webm", "vp9", "", "webm"},
+		{"out.mov", "prores", "", "mov"},
+		{"out.qt", "prores", "", "mov"},
+		{"out.QT", "hevc", "mov", "mov"},
+		{"out.avi", "h264", "", "avi"},
+		{"out.ogg", "theora", "", "ogg"},
+		{"out.ogv", "theora", "", "ogg"},
+		{"out.OGV", "theora", "ogg", "ogg"},
+		{"out.ts", "hevc", "", "ts"},
+		{"out.nut", "ffv1", "", "nut"},
+	}
+	for _, tc := range cases {
+		s := config.Factory()
+		s.Codec, s.Container = tc.codec, tc.reqContainer
+		dest, err := Resolve(src, filepath.Join(root, tc.filename), s, "conversion", 0, false)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", tc.filename, err)
+		}
+		if dest.Container != tc.wantContainer {
+			t.Fatalf("%s: got container %q, want %q", tc.filename, dest.Container, tc.wantContainer)
+		}
+	}
+}
+
+func TestContainerAliasConflictsAndCompatibility(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "clip.mp4")
+
+	s := config.Factory()
+	s.Container = "mp4"
+	if _, err := Resolve(src, filepath.Join(root, "out.qt"), s, "conversion", 0, false); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("expected .qt vs mp4 conflict, got %v", err)
+	}
+	s.Codec, s.Container = "theora", "mkv"
+	if _, err := Resolve(src, filepath.Join(root, "out.ogv"), s, "conversion", 0, false); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("expected .ogv vs mkv conflict, got %v", err)
+	}
+
+	s = config.Factory()
+	s.Codec, s.Container = "av1", ""
+	if _, err := Resolve(src, filepath.Join(root, "out.mov"), s, "conversion", 0, false); err == nil {
+		t.Fatal("expected mov + av1 rejection")
+	}
+	if _, err := Resolve(src, filepath.Join(root, "out.ogg"), s, "conversion", 0, false); err == nil {
+		t.Fatal("expected ogg + av1 rejection")
+	}
+	s.Codec = "hevc"
+	if _, err := Resolve(src, filepath.Join(root, "out.webm"), s, "conversion", 0, false); err == nil {
+		t.Fatal("expected webm + hevc rejection")
+	}
+	s.Codec, s.Container = "prores", "webm"
+	if _, err := Resolve(src, filepath.Join(root, "exports"), s, "conversion", 0, false); err == nil {
+		t.Fatal("expected webm + prores rejection")
+	}
+	s.Codec, s.Container = "av1", "flv"
+	if _, err := Resolve(src, filepath.Join(root, "exports"), s, "conversion", 0, false); err == nil {
+		t.Fatal("expected unknown container rejection")
+	}
+}
+
+func TestRecommendedContainerFallbackAndDirectoryAutoNaming(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "clip.mp4")
+	outDir := filepath.Join(root, "exports")
+
+	for codec, wantContainer := range map[string]string{
+		"av1":    "mp4",
+		"hevc":   "mp4",
+		"h264":   "mp4",
+		"vp9":    "webm",
+		"prores": "mov",
+		"ffv1":   "mkv",
+		"theora": "ogg",
+	} {
+		s := config.Factory()
+		s.Codec, s.Container = codec, ""
+		conv, err := Resolve(src, outDir, s, "conversion", 0, false)
+		if err != nil {
+			t.Fatalf("%s conversion: %v", codec, err)
+		}
+		if conv.Container != wantContainer || filepath.Base(conv.Path) != "clip."+codec+"."+wantContainer {
+			t.Fatalf("%s conversion: got %+v", codec, conv)
+		}
+	}
+
+	for _, container := range config.Containers {
+		s := config.Factory()
+		s.Codec, s.Container = "theora", container
+		if !config.Accepts(container, "theora", "") {
+			s.Codec = "av1"
+		}
+		if !config.Accepts(container, s.Codec, "") {
+			s.Codec = "h264"
+		}
+		dest, err := Resolve(src, outDir, s, "default", int64(5000000), false)
+		if err != nil {
+			t.Fatalf("%s default: %v", container, err)
+		}
+		if dest.Container != container || filepath.Base(dest.Path) != "clip.fit5."+container {
+			t.Fatalf("%s default: got %+v", container, dest)
+		}
 	}
 }

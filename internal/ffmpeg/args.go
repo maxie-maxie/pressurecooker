@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -45,8 +46,24 @@ func BuildArgs(req Request) ([]string, error) {
 		container = "mp4"
 	}
 	muxer, ok := muxerByContainer[container]
-	if !ok {
-		return nil, fmt.Errorf("container must be mp4, mkv or webm; got %q", container)
+	if !ok || !config.Accepts(container, "", "") {
+		return nil, fmt.Errorf("unsupported container %q", container)
+	}
+	codec := codecForEncoder(req.Encoder.Name, req.Settings.Codec)
+	if _, ok := softwareEncoders[codec]; !ok {
+		return nil, fmt.Errorf("unsupported video codec %q", codec)
+	}
+	if !config.Accepts(container, codec, "") {
+		return nil, fmt.Errorf("%s does not accept %s", container, codec)
+	}
+	caps := config.CodecCaps(codec)
+	if rateControl == "abr" && !caps.SizeMode {
+		return nil, fmt.Errorf("%s supports conversion only; size mode is unsupported", codec)
+	}
+	if req.Settings.CRF != nil {
+		if err := validateCRF(*req.Settings.CRF, codec); err != nil {
+			return nil, err
+		}
 	}
 
 	isVulkan := req.Encoder.Backend == "Vulkan" || strings.HasSuffix(req.Encoder.Name, "_vulkan")
@@ -64,14 +81,10 @@ func BuildArgs(req Request) ([]string, error) {
 			if isHardware {
 				return nil, fmt.Errorf("raw CRF is unsupported on hardware; use --quality or --hw off")
 			}
-			codec := codecForEncoder(req.Encoder.Name, req.Settings.Codec)
-			if err := validateCRF(*req.Settings.CRF, codec); err != nil {
-				return nil, err
-			}
 			quantizer = *req.Settings.CRF
 		} else if req.Encoder.Quantizer > 0 {
 			quantizer = req.Encoder.Quantizer
-		} else {
+		} else if caps.Quality {
 			q, err := QualityQuantizer(req.Settings.Quality, req.Encoder.Name)
 			if err != nil {
 				return nil, err
@@ -89,8 +102,13 @@ func BuildArgs(req Request) ([]string, error) {
 	if !isPass1 && strings.TrimSpace(req.Output) == "" {
 		return nil, fmt.Errorf("output path is required")
 	}
-	if req.Media.HasAudio && !isPass1 && !req.Settings.AudioSource && req.Settings.AudioKbps <= 0 {
-		return nil, fmt.Errorf("audio-kbps must be a positive integer")
+	var audio []string
+	if !isPass1 {
+		var err error
+		audio, err = audioArgs(container, req.Settings, req.Media, req.Origins)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	filters, err := buildVideoFilters(req.Settings, req.Media)
@@ -99,7 +117,7 @@ func BuildArgs(req Request) ([]string, error) {
 	}
 	filterArg := strings.Join(filters, ",")
 	if isVulkan {
-		filterArg = vulkanFilter(filters, req.Encoder.Decode)
+		filterArg = vulkanFilter(filters, req.Encoder.Decode, vulkanPixelFormat(req.Encoder.Name))
 	}
 
 	args := []string{ffmpegBin, "-nostdin", "-y", "-hide_banner"}
@@ -124,16 +142,11 @@ func BuildArgs(req Request) ([]string, error) {
 	args = append(args, "-c:v", req.Encoder.Name)
 	switch {
 	case isVulkan:
-		args = append(args, "-quality", strconv.Itoa(req.Encoder.Quality))
-		if rateControl == "quality" {
-			args = append(args, "-rc_mode", "cqp", "-qp", formatFloat(quantizer))
-		} else {
-			args = append(args, "-rc_mode", "vbr", "-b:v", fmt.Sprintf("%dk", req.VideoKbps))
-		}
+		args = append(args, vulkanCodecArgs(req.Encoder.Name, req.Encoder.Quality, quantizer, rateControl, req.VideoKbps)...)
 	case isQSV:
 		preset := req.Encoder.Preset
 		if preset == "" {
-			preset, err = config.ResolvePreset(req.Settings.Preset, codecForEncoder(req.Encoder.Name, req.Settings.Codec), true)
+			preset, err = config.ResolvePreset(req.Settings.Preset, codec, true)
 			if err != nil {
 				return nil, err
 			}
@@ -147,17 +160,39 @@ func BuildArgs(req Request) ([]string, error) {
 				args = append(args, "-look_ahead", "1")
 			}
 		}
+	case codec == "prores":
+		args = append(args, "-profile:v", formatFloat(quantizer), "-pix_fmt", "yuv422p10le")
+	case codec == "ffv1":
+		args = append(args, "-level", "3")
+	case codec == "theora":
+		if rateControl == "quality" {
+			args = append(args, "-q:v", formatFloat(quantizer))
+		} else {
+			args = append(args, "-b:v", fmt.Sprintf("%dk", req.VideoKbps))
+		}
+		args = append(args, "-pix_fmt", "yuv420p")
 	default:
 		preset := req.Encoder.Preset
 		if preset == "" {
-			preset, err = config.ResolvePreset(req.Settings.Preset, codecForEncoder(req.Encoder.Name, req.Settings.Codec), false)
+			preset, err = config.ResolvePreset(req.Settings.Preset, codec, false)
 			if err != nil {
 				return nil, err
 			}
 		}
-		args = append(args, "-preset", preset)
+		if codec == "vp9" {
+			preset, err = config.ResolvePreset(preset, codec, false)
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, "-cpu-used", preset)
+		} else {
+			args = append(args, "-preset", preset)
+		}
 		if rateControl == "quality" {
 			args = append(args, "-crf", formatFloat(quantizer), "-pix_fmt", "yuv420p")
+			if codec == "vp9" {
+				args = append(args, "-b:v", "0")
+			}
 		} else {
 			args = append(args, "-b:v", fmt.Sprintf("%dk", req.VideoKbps), "-pix_fmt", "yuv420p")
 		}
@@ -176,7 +211,7 @@ func BuildArgs(req Request) ([]string, error) {
 		return args, nil
 	}
 
-	args = append(args, audioArgs(container, req.Settings, req.Media)...)
+	args = append(args, audio...)
 	if container == "mp4" {
 		args = append(args, "-movflags", "+faststart")
 	}
@@ -192,6 +227,14 @@ func codecForEncoder(encName, fallback string) string {
 		return "hevc"
 	case "libsvtav1", "av1_vulkan", "av1_qsv":
 		return "av1"
+	case "libvpx-vp9", "vp9_qsv":
+		return "vp9"
+	case "prores_ks", "prores_ks_vulkan":
+		return "prores"
+	case "ffv1", "ffv1_vulkan":
+		return "ffv1"
+	case "libtheora":
+		return "theora"
 	default:
 		return strings.ToLower(strings.TrimSpace(fallback))
 	}
@@ -230,18 +273,54 @@ func buildVideoFilters(s config.Settings, m Media) ([]string, error) {
 	return filters, nil
 }
 
-func vulkanFilter(filters []string, decode bool) string {
+func vulkanPixelFormat(name string) string {
+	switch codecForEncoder(name, "") {
+	case "prores":
+		return "yuv422p10le"
+	case "ffv1":
+		return ""
+	default:
+		return "nv12"
+	}
+}
+
+func vulkanCodecArgs(name string, quality int, quantizer float64, rateControl string, videoKbps int) []string {
+	switch codecForEncoder(name, "") {
+	case "prores":
+		return []string{"-profile:v", formatFloat(quantizer)}
+	case "ffv1":
+		// Vulkan needs version 4 for subsampled frames with unaligned dimensions.
+		return []string{"-level", "4", "-strict:v", "experimental"}
+	}
+	args := []string{"-quality", strconv.Itoa(quality)}
+	if rateControl == "quality" {
+		return append(args, "-rc_mode", "cqp", "-qp", formatFloat(quantizer))
+	}
+	return append(args, "-rc_mode", "vbr", "-b:v", fmt.Sprintf("%dk", videoKbps))
+}
+
+func vulkanFilter(filters []string, decode bool, pixelFormat string) string {
 	if !decode {
 		out := append([]string{}, filters...)
-		out = append(out, "format=nv12", "hwupload")
+		if pixelFormat != "" {
+			out = append(out, "format="+pixelFormat)
+		}
+		out = append(out, "hwupload")
 		return strings.Join(out, ",")
 	}
-	scale := "scale_vulkan=format=nv12"
+	scale := "scale_vulkan"
+	if pixelFormat != "" {
+		scale += "=format=" + pixelFormat
+	}
 	rest := make([]string, 0, len(filters))
 	for _, f := range filters {
 		if strings.HasPrefix(f, "scale=") {
 			if w, h, ok := strings.Cut(strings.TrimPrefix(f, "scale="), ":"); ok {
-				scale += ":w=" + w + ":h=" + h
+				separator := ":"
+				if !strings.Contains(scale, "=") {
+					separator = "="
+				}
+				scale += separator + "w=" + w + ":h=" + h
 				continue
 			}
 		}
@@ -250,26 +329,55 @@ func vulkanFilter(filters []string, decode bool) string {
 	return strings.Join(append([]string{scale}, rest...), ",")
 }
 
-func audioArgs(container string, s config.Settings, m Media) []string {
+func audioArgs(container string, s config.Settings, m Media, origins config.Origins) ([]string, error) {
 	if !m.HasAudio {
-		return []string{"-an"}
+		return []string{"-an"}, nil
 	}
-	copyCodec, encoder := "aac", "aac"
-	if container == "webm" {
-		copyCodec, encoder = "opus", "libopus"
+	codec := strings.ToLower(strings.TrimSpace(s.AudioCodec))
+	if codec == "" {
+		codec = "opus"
+	}
+	if !slices.Contains(config.AudioCodecs, codec) {
+		return nil, fmt.Errorf("unsupported audio codec %q", codec)
+	}
+	explicit := origins["audio_codec"] == "explicit"
+	if !config.Accepts(container, "", codec) {
+		if explicit {
+			return nil, fmt.Errorf("%s does not accept %s audio", container, codec)
+		}
+		for _, candidate := range config.AudioCodecs {
+			if config.Accepts(container, "", candidate) {
+				codec = candidate
+				break
+			}
+		}
+	}
+	sourceCodec := strings.ToLower(strings.TrimSpace(m.AudioCodec))
+	if s.AudioSource && sourceCodec != "" && config.Accepts(container, "", sourceCodec) && (!explicit || sourceCodec == codec) {
+		return []string{"-c:a", "copy"}, nil
 	}
 	targetKbps := s.AudioKbps
 	if s.AudioSource {
 		targetKbps = 128
 	}
-	if s.AudioSource && strings.EqualFold(m.AudioCodec, copyCodec) {
-		return []string{"-c:a", "copy"}
+	encoder := codec
+	switch codec {
+	case "opus":
+		encoder = "libopus"
+	case "mp3":
+		encoder = "libmp3lame"
 	}
-	out := []string{"-c:a", encoder, "-b:a", fmt.Sprintf("%dk", targetKbps)}
+	out := []string{"-c:a", encoder}
+	if codec != "flac" {
+		if targetKbps <= 0 {
+			return nil, fmt.Errorf("audio-kbps must be a positive integer")
+		}
+		out = append(out, "-b:a", fmt.Sprintf("%dk", targetKbps))
+	}
 	if encoder == "libopus" {
 		out = append(out, "-vbr", "constrained")
 	}
-	return out
+	return out, nil
 }
 
 func passArgs(encoderName string, pass int, passLog string) []string {
