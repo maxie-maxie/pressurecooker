@@ -7,7 +7,7 @@ on:
       version:
         description: Version string embedded via -X main.version
         required: false
-        default: "2.0.0"
+        default: "1.3.0"
         type: string
 
 permissions:
@@ -18,7 +18,7 @@ jobs:
     name: Build all targets and check Linux binaries
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ inputs.version || '2.0.0' }}
+      VERSION: ${{ inputs.version || '1.3.0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -68,7 +68,7 @@ jobs:
     needs: build
     runs-on: windows-latest
     env:
-      VERSION: ${{ inputs.version || '2.0.0' }}
+      VERSION: ${{ inputs.version || '1.3.0' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
