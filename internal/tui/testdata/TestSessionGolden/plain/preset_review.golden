@@ -1,0 +1,24 @@
+New preset
+
+Review
+> Confirm
+  Label: Default
+  Description: AV1, 1080p max, source audio and FPS
+  Codec: av1
+  Container: mp4
+  Encoder speed: 8
+  Quality or CRF: balanced
+  Audio: source
+  FPS: source
+  Resolution: 1080p
+
+
+
+
+
+
+
+
+
+
+Up/Down select  Enter confirm/edit  Left/Shift+Tab back  Esc cancel  |  step 10/10  preset Default
