@@ -263,6 +263,12 @@ func TestSessionAllCodecsContainersAudioAndControls(t *testing.T) {
 }
 
 func TestSessionGreyedOptionsAndSkipping(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "")
+	if err := os.Unsetenv("NO_COLOR"); err != nil {
+		t.Fatal(err)
+	}
+
 	// Container greying for hevc: webm and ogg are unavailable; cursor skips them.
 	m := newSessionModel(sessionFixture(ModeSetup), SessionOptions{})
 	sessionEdit(t, m, "codec", "hevc")
